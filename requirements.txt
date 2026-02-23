@@ -1,0 +1,3 @@
+python-telegram-bot>=21.0
+yt-dlp>=2024.01.01
+python-dotenv>=1.0.0
