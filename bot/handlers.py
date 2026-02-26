@@ -21,9 +21,6 @@ logger = logging.getLogger(__name__)
 USER_COOLDOWN = 5
 _user_last_request: dict[int, float] = {}
 
-
-# ─────────────────────── Command Handlers ────────────────────────
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start — welcome message."""
     platforms = " • ".join(SUPPORTED_PLATFORMS.keys())
@@ -52,8 +49,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     lines.append("  • Single videos only (no playlists)")
     await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
-
-# ─────────────────────── Message Handler ─────────────────────────
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle incoming text messages — detect and download video URLs."""

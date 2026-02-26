@@ -11,12 +11,10 @@ logger = logging.getLogger(__name__)
 
 
 class DownloadError(Exception):
-    """Raised when a video download fails."""
     pass
 
 
 class FileTooLargeError(Exception):
-    """Raised when the downloaded file exceeds the Telegram size limit."""
     pass
 
 
@@ -24,11 +22,7 @@ def _get_ydl_opts(
     output_path: str,
     progress_hook: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """
-    Build yt-dlp options optimized for high-quality, watermark-free downloads.
-    """
     opts: dict[str, Any] = {
-        # Best MP4 video + M4A audio, fallback to best combined stream
         "format": (
             "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
             "bestvideo+bestaudio/"
@@ -36,30 +30,22 @@ def _get_ydl_opts(
         ),
         "merge_output_format": "mp4",
         "outtmpl": output_path,
-
-        # Single video only, no playlists
         "noplaylist": True,
-
-        # Network
         "socket_timeout": 30,
         "retries": 3,
         "fragment_retries": 3,
 
-        # Avoid geo-restrictions where possible
         "geo_bypass": True,
 
-        # Quiet logging (we handle our own)
         "quiet": True,
         "no_warnings": True,
 
-        # Ensure we get the clean (no watermark) version
         "extractor_args": {
             "tiktok": {
                 "api_hostname": ["api22-normal-c-useast2a.tiktokv.com"],
             },
         },
 
-        # Post-processing: embed metadata
         "postprocessors": [
             {
                 "key": "FFmpegMetadata",
