@@ -1,6 +1,7 @@
 import logging
 import sys
-
+import asyncio
+from telegram import BotCommand
 from telegram.ext import ApplicationBuilder
 
 from bot.config import BOT_TOKEN
@@ -19,6 +20,18 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+async def post_init(application) -> None:
+    """Set bot commands on startup."""
+    commands = [
+        BotCommand("start", "Start the bot & welcome message"),
+        BotCommand("help", "How to use the bot"),
+        BotCommand("status", "Check bot load & queue"),
+        BotCommand("stats", "Global download statistics"),
+    ]
+    await application.bot.set_my_commands(commands)
+    logger.info("✅ Bot commands registered.")
+
+
 def main() -> None:
     """Initialize and start the Telegram bot."""
     logger.info("🚀 Starting Video Downloader Bot...")
@@ -29,6 +42,7 @@ def main() -> None:
         .token(BOT_TOKEN)
         .read_timeout(120)
         .write_timeout(120)
+        .post_init(post_init)
         .build()
     )
 
@@ -37,6 +51,8 @@ def main() -> None:
         app.add_handler(handler)
 
     logger.info("✅ Bot is ready. Polling for messages...")
+    
+    # Run until interrupted
     app.run_polling(drop_pending_updates=True)
 
 

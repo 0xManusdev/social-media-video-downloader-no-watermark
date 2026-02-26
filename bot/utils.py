@@ -13,8 +13,38 @@ URL_REGEX = re.compile(
 
 
 def extract_urls(text: str) -> list[str]:
-    """Extract all URLs from a text message."""
-    return URL_REGEX.findall(text)
+    """Extract all distinct normalized URLs from a text message."""
+    raw_urls = URL_REGEX.findall(text)
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_urls = []
+    for url in raw_urls:
+        norm = normalize_url(url)
+        if norm not in seen:
+            seen.add(norm)
+            unique_urls.append(norm)
+    return unique_urls
+
+
+def normalize_url(url: str) -> str:
+    """Strip common tracking parameters from URLs."""
+    try:
+        parsed = urlparse(url)
+        # Simple query param filtering (e.g. for TikTok/Instagram tracking)
+        # Keep basic URL without massive tracking strings
+        if "tiktok.com" in (parsed.hostname or ""):
+            # Strip everything after '?' for TikTok
+            return f"{parsed.scheme}://{parsed.hostname}{parsed.path}"
+        return url
+    except Exception:
+        return url
+
+
+def sanitize_filename(filename: str) -> str:
+    """Remove characters that are unsafe for filenames."""
+    # Keep alphanumeric, spaces, and basic punctuation
+    sanitized = re.sub(r'[^\w\s\-\.]', '', filename)
+    return sanitized.strip()[:100]  # Cap length
 
 
 def identify_platform(url: str) -> str | None:
@@ -32,6 +62,15 @@ def identify_platform(url: str) -> str | None:
             if hostname == domain or hostname.endswith(f".{domain}"):
                 return platform
     return None
+
+
+def _escape_html(text: str) -> str:
+    """Escape HTML special characters for Telegram messages."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
 
 def format_file_size(size_bytes: int) -> str:
