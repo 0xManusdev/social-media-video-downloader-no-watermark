@@ -11,6 +11,9 @@ export const ADMIN_IDS = (process.env.ADMIN_IDS || "")
   .map((s) => parseInt(s.trim(), 10))
   .filter(Number.isFinite);
 
+// Path to a Netscape-format cookies file (for Instagram etc.)
+export const COOKIES_FILE = process.env.COOKIES_FILE || "";
+
 // ── Downloads ────────────────────────────────────────────────────
 export const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || "50", 10);
 export const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;

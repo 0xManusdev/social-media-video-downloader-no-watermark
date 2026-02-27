@@ -1,10 +1,10 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { statSync, readdirSync, unlinkSync } from "fs";
+import { statSync, readdirSync, unlinkSync, existsSync } from "fs";
 import { join } from "path";
 import { randomBytes } from "crypto";
 
-import { DOWNLOAD_DIR, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB } from "./config.js";
+import { DOWNLOAD_DIR, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, COOKIES_FILE } from "./config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -38,9 +38,14 @@ export async function download(url) {
 
     // TikTok-specific: pick no-watermark CDN
     "--extractor-args", "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
-
-    url,
   ];
+
+  // If a cookies file is configured and exists, pass it (required for Instagram)
+  if (COOKIES_FILE && existsSync(COOKIES_FILE)) {
+    args.push("--cookies", COOKIES_FILE);
+  }
+
+  args.push(url);
 
   let stdout = "";
   try {
