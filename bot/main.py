@@ -1,6 +1,6 @@
 import logging
 import sys
-import asyncio
+import time
 from telegram import BotCommand
 from telegram.ext import ApplicationBuilder
 
@@ -9,7 +9,7 @@ from bot.handlers import get_handlers
 
 # ── Logging setup ──
 logging.basicConfig(
-    format="%(asctime)s │ %(name)-20s │ %(levelname)-7s │ %(message)s",
+    format="%(asctime)s | %(name)-20s | %(levelname)-7s | %(message)s",
     level=logging.INFO,
     stream=sys.stdout,
 )
@@ -51,7 +51,10 @@ def main() -> None:
     for handler in get_handlers():
         app.add_handler(handler)
 
-    logger.info("✅ Bot is ready. Polling for messages...")
+    logger.info("Bot is ready. Polling for messages...")
+    
+    # Give Telegram a moment to close any previous connection
+    time.sleep(5)
     
     # Run until interrupted
     app.run_polling(drop_pending_updates=True)

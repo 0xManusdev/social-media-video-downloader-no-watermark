@@ -10,6 +10,7 @@ module.exports = {
                 NODE_ENV: "production",
             },
             autorestart: true,
+            restart_delay: 8000,
             watch: false,
             max_memory_restart: "500M",
             error_file: "logs/pm2-error.log",
