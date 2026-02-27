@@ -1,0 +1,9 @@
+.git
+node_modules
+downloads
+logs
+*.log
+.env
+bot/
+ecosystem.config.*
+README.md
