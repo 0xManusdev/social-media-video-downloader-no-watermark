@@ -22,9 +22,15 @@ export async function download(url) {
 	const outTemplate = join(DOWNLOAD_DIR, `${fileId}.%(ext)s`);
 
 	const args = [
-		// Format: best video + best audio merged → always includes sound
-		"--format", "bestvideo+bestaudio/best",
+		// Prefer H.264 video + AAC audio — compatible with all phones, PCs and Telegram.
+		// Falls back to any mp4 combo, then anything available.
+		"--format",
+		"bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
 		"--merge-output-format", "mp4",
+
+		// Re-encode to H.264+AAC to guarantee playback on every device
+		"--postprocessor-args",
+		"ffmpeg:-c:v libx264 -c:a aac -movflags +faststart -preset fast -crf 23",
 
 		"--no-playlist",
 		"--socket-timeout", "30",
