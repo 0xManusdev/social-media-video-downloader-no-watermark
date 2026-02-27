@@ -187,9 +187,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         parse_mode=ParseMode.HTML
     )
 
+    acquired = False
     try:
         # Acquire slot in queue
         await queue_manager.acquire(user_id)
+        acquired = True
         
         stats.record_attempt()
         await query.edit_message_text(f"📥 Downloading from <b>{platform}</b>...", parse_mode=ParseMode.HTML)
@@ -199,7 +201,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.chat.send_action(action)
         
         # Download
+        logger.info(f"Starting download: {url} (audio_only={audio_only})")
         result = await download_video_async(url, audio_only=audio_only)
+        logger.info(f"Download complete: {result['file_path']}")
         
         file_path = result["file_path"]
         title = result["title"]
@@ -224,6 +228,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text("📤 Uploading...")
         await query.message.chat.send_action(action)
         
+        logger.info(f"Uploading {file_path} ({format_file_size(file_size)})")
         with open(file_path, "rb") as f:
             if audio_only:
                 await query.message.reply_audio(
@@ -232,7 +237,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     title=title,
                     performer=uploader,
                     duration=int(duration),
-                    parse_mode=ParseMode.HTML
+                    parse_mode=ParseMode.HTML,
+                    read_timeout=120,
+                    write_timeout=120,
                 )
             else:
                 await query.message.reply_video(
@@ -240,26 +247,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     caption=caption,
                     duration=int(duration),
                     parse_mode=ParseMode.HTML,
-                    supports_streaming=True
+                    supports_streaming=True,
+                    read_timeout=120,
+                    write_timeout=120,
                 )
         
         # Cleanup and stats
         cleanup_file(file_path)
         stats.record_success(platform, user_id)
         await query.delete_message()
+        logger.info(f"Successfully sent to user {user_id}")
 
     except FileTooLargeError as e:
         stats.record_too_large()
         await query.edit_message_text(f"❌ <b>Too Large</b>\n\n{e}", parse_mode=ParseMode.HTML)
     except DownloadError as e:
         stats.record_failure()
+        logger.error(f"Download error for {url}: {e}")
         await query.edit_message_text(f"❌ <b>Download Failed</b>\n\n{e}", parse_mode=ParseMode.HTML)
     except Exception as e:
-        logger.exception("Callback error")
+        logger.exception(f"Unexpected error in callback for {url}")
         stats.record_failure()
         await query.edit_message_text("❌ <b>An unexpected error occurred.</b>", parse_mode=ParseMode.HTML)
     finally:
-        queue_manager.release(user_id)
+        if acquired:
+            queue_manager.release(user_id)
 
 
 # ─────────────────────── Handler Registration ────────────────────

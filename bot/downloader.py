@@ -40,20 +40,15 @@ def _get_ydl_opts(
         "retries": 10,
         "fragment_retries": 10,
         "geo_bypass": True,
-        "quiet": True,
-        "no_warnings": True,
-        "headers": headers,
+        "quiet": False,
+        "no_warnings": False,
+        "http_headers": headers,
         "extractor_args": {
             "tiktok": {
                 "api_hostname": ["api22-normal-c-useast2a.tiktokv.com"],
             },
         },
-        "postprocessors": [
-            {
-                "key": "FFmpegMetadata",
-                "add_metadata": True,
-            },
-        ],
+        "postprocessors": [],
     }
 
     if audio_only:
@@ -67,11 +62,6 @@ def _get_ydl_opts(
         # Always pick the absolute best quality, then merge to MP4 for Telegram
         opts["format"] = "bestvideo+bestaudio/best"
         opts["merge_output_format"] = "mp4"
-        # Embed thumbnail if possible
-        opts["writethumbnail"] = True
-        opts["postprocessors"].append({
-            "key": "EmbedThumbnail",
-        })
 
     if progress_hook:
         opts["progress_hooks"] = [progress_hook]
