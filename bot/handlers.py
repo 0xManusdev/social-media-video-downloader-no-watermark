@@ -271,7 +271,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text("❌ <b>An unexpected error occurred.</b>", parse_mode=ParseMode.HTML)
     finally:
         if acquired:
-            queue_manager.release(user_id)
+            await queue_manager.release(user_id)
 
 
 # ─────────────────────── Handler Registration ────────────────────
