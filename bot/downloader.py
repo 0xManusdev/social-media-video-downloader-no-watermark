@@ -64,8 +64,8 @@ def _get_ydl_opts(
             "preferredquality": "192",
         })
     else:
-        # Prefer MP4 for Telegram compatibility
-        opts["format"] = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best"
+        # Always pick the absolute best quality, then merge to MP4 for Telegram
+        opts["format"] = "bestvideo+bestaudio/best"
         opts["merge_output_format"] = "mp4"
         # Embed thumbnail if possible
         opts["writethumbnail"] = True

@@ -20,8 +20,14 @@ class BotStats:
     by_platform: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     # user_id -> count
     by_user: dict[int, int] = field(default_factory=lambda: defaultdict(int))
+    # Unique users seen
+    all_users: set[int] = field(default_factory=set)
 
     _lock: Lock = field(default_factory=Lock, repr=False, compare=False)
+
+    def record_user(self, user_id: int) -> None:
+        with self._lock:
+            self.all_users.add(user_id)
 
     def record_attempt(self) -> None:
         with self._lock:
@@ -55,6 +61,7 @@ class BotStats:
         lines = [
             "📊 <b>Bot Statistics</b>\n",
             f"⏱ Uptime: <b>{self.uptime_str()}</b>",
+            f"👥 Total Users: <b>{len(self.all_users)}</b>",
             f"📥 Attempted: <b>{self.total_attempted}</b>",
             f"✅ Succeeded: <b>{self.total_succeeded}</b>",
             f"❌ Failed: <b>{self.total_failed}</b>",

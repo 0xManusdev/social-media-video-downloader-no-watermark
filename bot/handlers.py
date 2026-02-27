@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import uuid
 from pathlib import Path
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -28,8 +29,26 @@ logger = logging.getLogger(__name__)
 # Cooldown tracking
 _user_last_request: dict[int, float] = {}
 
+# URL storage: short_id -> url (avoids Telegram's 64-byte callback_data limit)
+_pending_urls: dict[str, str] = {}
+
+
+def _store_url(url: str) -> str:
+    """Store a URL and return a short 8-char key for callback_data."""
+    short_id = uuid.uuid4().hex[:8]
+    _pending_urls[short_id] = url
+    return short_id
+
+
+def _pop_url(short_id: str) -> str | None:
+    """Retrieve and remove a stored URL by its short key."""
+    return _pending_urls.pop(short_id, None)
+
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start — welcome message."""
+    user_id = update.effective_user.id
+    stats.record_user(user_id)
     platforms = ", ".join(SUPPORTED_PLATFORMS.keys())
     text = (
         "👋 <b>Welcome to the Video Downloader Bot!</b>\n\n"
@@ -37,9 +56,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"<i>{platforms}</i>\n\n"
         "⚡ <b>How to use:</b>\n"
         "Just send me a link, and I'll ask if you want it as a <b>Video</b> or <b>Audio (MP3)</b>.\n\n"
-        "💡 <i>Tip: You can send multiple links in one message!</i>"
+        "💡 <i>Tip: You can send multiple links in one message!</i>\n"
+        "👤 <i>Need your ID? Use /id</i>"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /id — return the user's ID."""
+    user_id = update.effective_user.id
+    await update.message.reply_text(f"Your Telegram ID is: {user_id}")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -77,8 +103,10 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /stats — global statistics."""
-    # Everyone can see basic stats
+    """Handle /stats — admin-only global statistics."""
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("🔒 This command is restricted to admins.")
+        return
     await update.message.reply_text(stats.summary_text(), parse_mode=ParseMode.HTML)
 
 
@@ -88,6 +116,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     user_id = update.effective_user.id
+    stats.record_user(user_id)
     text = update.message.text.strip()
 
     urls = extract_urls(text)
@@ -103,16 +132,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     _user_last_request[user_id] = now
 
-    for url in urls[:3]: # Limit to 3 URLs per message to avoid spam
+    for url in urls[:3]:
         platform = identify_platform(url)
         if not platform:
             continue
 
-        # Show keyboard for format choice
+        # Store URL with a short ID for callback_data (Telegram 64-byte limit)
+        sid = _store_url(url)
+
         keyboard = [
             [
-                InlineKeyboardButton("🎬 Video", callback_data=f"dl|v|{url}"),
-                InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"dl|a|{url}"),
+                InlineKeyboardButton("🎬 Video", callback_data=f"dl|v|{sid}"),
+                InlineKeyboardButton("🎵 Audio (MP3)", callback_data=f"dl|a|{sid}"),
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -132,13 +163,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     
     data = query.data.split("|")
-    if data[0] != "dl":
+    if data[0] != "dl" or len(data) != 3:
         return
 
-    mode = data[1] # 'v' or 'a'
-    url = "|".join(data[2:]) # Rejoin URL if it contained pipes (unlikely but safe)
+    mode = data[1]  # 'v' or 'a'
+    short_id = data[2]
     user_id = update.effective_user.id
     audio_only = (mode == 'a')
+
+    # Retrieve the stored URL
+    url = _pop_url(short_id)
+    if not url:
+        await query.edit_message_text("⚠️ This link has expired. Please send it again.")
+        return
     
     platform = identify_platform(url) or "Unknown"
     
@@ -231,6 +268,7 @@ def get_handlers() -> list:
     """Return all handlers to register with the bot."""
     return [
         CommandHandler("start", start_command),
+        CommandHandler("id", id_command),
         CommandHandler("help", help_command),
         CommandHandler("status", status_command),
         CommandHandler("stats", stats_command),

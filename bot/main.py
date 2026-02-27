@@ -24,6 +24,7 @@ async def post_init(application) -> None:
     """Set bot commands on startup."""
     commands = [
         BotCommand("start", "Start the bot & welcome message"),
+        BotCommand("id", "Get your Telegram User ID"),
         BotCommand("help", "How to use the bot"),
         BotCommand("status", "Check bot load & queue"),
         BotCommand("stats", "Global download statistics"),
