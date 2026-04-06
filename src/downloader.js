@@ -91,7 +91,11 @@ async function findDownloadedFile(dir, prefix) {
 	const mp4 = join(dir, `${prefix}.mp4`);
 	if (await fileExists(mp4)) return mp4;
 
-	const files = (await readdir(dir)).filter((f) => f.startsWith(prefix));
+	const files = (await readdir(dir)).filter((f) => {
+		if (!f.startsWith(prefix)) return false;
+		const ext = f.slice(f.lastIndexOf(".")).toLowerCase();
+		return !IMAGE_EXTS.has(ext); // exclude thumbnails/images
+	});
 	if (!files.length) return null;
 
 	const preferred = files.find((f) => f.endsWith(".mp4")) ?? files[0];
