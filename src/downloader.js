@@ -5,6 +5,8 @@ import { join } from "path";
 import { randomBytes } from "crypto";
 import { DOWNLOAD_DIR, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, COOKIES_FILE } from "./config.js";
 
+const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
+
 export class DownloadError extends Error {}
 export class FileTooLargeError extends Error {}
 
@@ -35,16 +37,40 @@ function buildArgs(outTemplate, cookiesFile) {
 		"--postprocessor-args",
 		"ffmpeg:-c:v copy -c:a copy -movflags +faststart",
 		"--no-playlist",
-		"--concurrent-fragments", "16",  
+		"--concurrent-fragments", "16",
 		"--socket-timeout", "15",
 		"--retries", "3",
 		"--fragment-retries", "5",
-		"--buffer-size", "16K",          
-		"--http-chunk-size", "10M",      
+		"--buffer-size", "16K",
+		"--http-chunk-size", "10M",
 		"--geo-bypass",
 		"--user-agent", USER_AGENT,
 		"--extractor-args", "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
 		"--no-warnings",
+		"--output", outTemplate,
+		"--print-json",
+		"--no-simulate",
+	];
+
+	if (cookiesFile) {
+		args.push("--cookies", cookiesFile);
+	}
+
+	return args;
+}
+
+function buildImageArgs(outTemplate, cookiesFile) {
+	const args = [
+		"--no-playlist",
+		"--socket-timeout", "15",
+		"--retries", "3",
+		"--geo-bypass",
+		"--user-agent", USER_AGENT,
+		"--extractor-args", "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
+		"--no-warnings",
+		"--write-thumbnail",
+		"--convert-thumbnails", "jpg",
+		"--skip-download",
 		"--output", outTemplate,
 		"--print-json",
 		"--no-simulate",
@@ -70,6 +96,18 @@ async function findDownloadedFile(dir, prefix) {
 
 	const preferred = files.find((f) => f.endsWith(".mp4")) ?? files[0];
 	return join(dir, preferred);
+}
+
+async function findDownloadedImages(dir, prefix) {
+	const files = await readdir(dir);
+	return files
+		.filter((f) => {
+			if (!f.startsWith(prefix)) return false;
+			const ext = f.slice(f.lastIndexOf(".")).toLowerCase();
+			return IMAGE_EXTS.has(ext);
+		})
+		.sort()
+		.map((f) => join(dir, f));
 }
 
 function extractError(raw) {
@@ -216,6 +254,7 @@ export async function download(url) {
 	}
 
 	return {
+		type:     "video",
 		filePath,
 		title:    info.title         || "Video",
 		duration: info.duration      || 0,
@@ -223,6 +262,52 @@ export async function download(url) {
 		platform: info.extractor_key || "Unknown",
 		fileSize: size,
 	};
+}
+
+export async function downloadImages(url) {
+	const runner = await getRunner();
+
+	const fileId = randomBytes(6).toString("hex");
+	const outTemplate = join(DOWNLOAD_DIR, `${fileId}.%(autonumber)s.%(ext)s`);
+
+	const cookiesArg =
+		COOKIES_FILE && (await fileExists(COOKIES_FILE)) ? COOKIES_FILE : null;
+
+	const args = [...buildImageArgs(outTemplate, cookiesArg), url];
+
+	let stdout;
+	try {
+		stdout = await spawnRunner(runner, args);
+	} catch (err) {
+		const images = await findDownloadedImages(DOWNLOAD_DIR, fileId);
+		for (const img of images) unlink(img).catch(() => {});
+		throw err;
+	}
+
+	let info = {};
+	try {
+		const lastJson = stdout
+			.trim()
+			.split("\n")
+			.findLast((l) => l.startsWith("{"));
+		if (lastJson) info = JSON.parse(lastJson);
+	} catch { }
+
+	const imagePaths = await findDownloadedImages(DOWNLOAD_DIR, fileId);
+	if (!imagePaths.length) throw new DownloadError("No images found after download.");
+
+	return {
+		type:     "images",
+		imagePaths,
+		title:    info.title    || "Images",
+		uploader: info.uploader || info.channel || "Unknown",
+		platform: info.extractor_key || "TikTok",
+		count:    imagePaths.length,
+	};
+}
+
+export async function cleanupImages(imagePaths) {
+	await Promise.all(imagePaths.map((p) => unlink(p).catch(() => {})));
 }
 
 export async function cleanup(filePath) {

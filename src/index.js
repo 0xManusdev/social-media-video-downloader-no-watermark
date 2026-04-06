@@ -4,7 +4,7 @@ import { message } from "telegraf/filters";
 
 import { BOT_TOKEN, ADMIN_IDS, COOLDOWN_SECONDS, PLATFORMS } from "./config.js";
 import { extractUrls, identifyPlatform, formatBytes, escapeHtml } from "./utils.js";
-import { download, cleanup, DownloadError, FileTooLargeError } from "./downloader.js";
+import { download, cleanup, downloadImages, cleanupImages, DownloadError, FileTooLargeError } from "./downloader.js";
 import { stats } from "./stats.js";
 import { queue } from "./queue.js";
 
@@ -97,6 +97,7 @@ bot.on(message("text"), async (ctx) => {
     return ctx.reply("Unsupported platform. Use /help to see the list.");
 
   const platform = identifyPlatform(url);
+  const isTikTok = platform === "TikTok";
 
   const [statusMsg] = await Promise.all([
     ctx.replyWithHTML(
@@ -107,40 +108,89 @@ bot.on(message("text"), async (ctx) => {
   ]);
 
   let filePath = null;
+  let imagePaths = null;
+
   try {
     stats.recordAttempt();
 
-    const result = await download(url);
-    filePath = result.filePath;
-    const { title, duration, uploader, fileSize } = result;
-
-    const mins = Math.floor(duration / 60);
-    const secs = String(Math.floor(duration % 60)).padStart(2, "0");
-    const caption =
-      `<b>${escapeHtml(title)}</b>\n` +
-      `${escapeHtml(uploader)} | ${platform}` +
-      (duration ? ` | ${mins}:${secs}` : "") +
-      `\n${formatBytes(fileSize)}`;
-
-    editStatus(ctx, statusMsg.message_id, "Uploading..."); 
-
-    await ctx.replyWithVideo(
-      { source: createReadStream(filePath) },
-      {
-        caption,
-        parse_mode: "HTML",
-        supports_streaming: true,
-        reply_to_message_id: ctx.message.message_id,
+    let result;
+    try {
+      result = await download(url);
+    } catch (videoErr) {
+      // If TikTok video download fails, try image slideshow fallback
+      if (isTikTok && videoErr instanceof DownloadError) {
+        await editStatus(ctx, statusMsg.message_id, "Downloading TikTok images...");
+        result = await downloadImages(url);
+      } else {
+        throw videoErr;
       }
-    );
+    }
 
-    stats.recordSuccess(platform, ctx.from.id);
+    if (result.type === "images") {
+      imagePaths = result.imagePaths;
+      const { title, uploader, count } = result;
 
-    Promise.all([
-      cleanup(filePath),
-      ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {}),
-    ]);
-    filePath = null; 
+      const caption = `<b>${escapeHtml(title)}</b>\n${escapeHtml(uploader)} | ${platform} | ${count} image${count > 1 ? "s" : ""}`;
+
+      editStatus(ctx, statusMsg.message_id, "Uploading images...");
+
+      // Telegram media groups: max 10 items
+      const chunks = [];
+      for (let i = 0; i < imagePaths.length; i += 10)
+        chunks.push(imagePaths.slice(i, i + 10));
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const mediaGroup = chunk.map((p, idx) => ({
+          type: "photo",
+          media: { source: createReadStream(p) },
+          ...(i === 0 && idx === 0 ? { caption, parse_mode: "HTML" } : {}),
+        }));
+        await ctx.replyWithMediaGroup(mediaGroup, {
+          reply_to_message_id: ctx.message.message_id,
+        });
+      }
+
+      stats.recordSuccess(platform, ctx.from.id);
+
+      Promise.all([
+        cleanupImages(imagePaths),
+        ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {}),
+      ]);
+      imagePaths = null;
+
+    } else {
+      filePath = result.filePath;
+      const { title, duration, uploader, fileSize } = result;
+
+      const mins = Math.floor(duration / 60);
+      const secs = String(Math.floor(duration % 60)).padStart(2, "0");
+      const caption =
+        `<b>${escapeHtml(title)}</b>\n` +
+        `${escapeHtml(uploader)} | ${platform}` +
+        (duration ? ` | ${mins}:${secs}` : "") +
+        `\n${formatBytes(fileSize)}`;
+
+      editStatus(ctx, statusMsg.message_id, "Uploading...");
+
+      await ctx.replyWithVideo(
+        { source: createReadStream(filePath) },
+        {
+          caption,
+          parse_mode: "HTML",
+          supports_streaming: true,
+          reply_to_message_id: ctx.message.message_id,
+        }
+      );
+
+      stats.recordSuccess(platform, ctx.from.id);
+
+      Promise.all([
+        cleanup(filePath),
+        ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {}),
+      ]);
+      filePath = null;
+    }
 
   } catch (err) {
     let errText;
@@ -158,7 +208,8 @@ bot.on(message("text"), async (ctx) => {
     await editStatus(ctx, statusMsg.message_id, errText, { parse_mode: "HTML" });
   } finally {
     queue.release(ctx.from.id);
-    if (filePath) cleanup(filePath); 
+    if (filePath) cleanup(filePath);
+    if (imagePaths) cleanupImages(imagePaths);
   }
 });
 
