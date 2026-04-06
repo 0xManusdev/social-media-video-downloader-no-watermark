@@ -1,9 +1,8 @@
-.git
 node_modules
-downloads
-logs
-*.log
 .env
-bot/
-ecosystem.config.*
+.env.*
+downloads/
+*.log
+.git
+.gitignore
 README.md

@@ -1,6 +1,5 @@
 import { PLATFORMS } from "./config.js";
 
-// ── URL extraction ───────────────────────────────────────────────
 const URL_RE = /https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b[-a-zA-Z0-9()@:%_+.~#?&/=]*/gi;
 
 export function extractUrls(text) {
@@ -10,7 +9,6 @@ export function extractUrls(text) {
 function normalizeUrl(url) {
   try {
     const u = new URL(url);
-    // Strip tracking params from TikTok
     if (u.hostname.includes("tiktok.com")) {
       return `${u.origin}${u.pathname}`;
     }
@@ -20,7 +18,6 @@ function normalizeUrl(url) {
   }
 }
 
-// ── Platform detection ───────────────────────────────────────────
 export function identifyPlatform(url) {
   try {
     const hostname = new URL(url).hostname.replace(/^www\./, "");
@@ -33,14 +30,12 @@ export function identifyPlatform(url) {
   return null;
 }
 
-// ── File size formatting ─────────────────────────────────────────
 export function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 }
 
-// ── HTML escaping ────────────────────────────────────────────────
 export function escapeHtml(text = "") {
   return String(text)
     .replace(/&/g, "&amp;")

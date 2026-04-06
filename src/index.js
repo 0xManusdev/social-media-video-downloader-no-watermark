@@ -2,43 +2,58 @@ import { createReadStream } from "fs";
 import { Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
 
-import {
-  BOT_TOKEN, ADMIN_IDS, COOLDOWN_SECONDS, PLATFORMS,
-} from "./config.js";
+import { BOT_TOKEN, ADMIN_IDS, COOLDOWN_SECONDS, PLATFORMS } from "./config.js";
 import { extractUrls, identifyPlatform, formatBytes, escapeHtml } from "./utils.js";
 import { download, cleanup, DownloadError, FileTooLargeError } from "./downloader.js";
 import { stats } from "./stats.js";
 import { queue } from "./queue.js";
 
-const bot = new Telegraf(BOT_TOKEN);
+const bot = new Telegraf(BOT_TOKEN, {
+  telegram: { apiRoot: "https://api.telegram.org" },
+  handlerTimeout: 300_000,
+});
 
-// ── Cooldown ─────────────────────────────────────────────────────
 const lastRequest = new Map();
+
 function checkCooldown(userId) {
   const now = Date.now();
-  const diff = (now - (lastRequest.get(userId) || 0)) / 1000;
-  if (diff < COOLDOWN_SECONDS) return Math.ceil(COOLDOWN_SECONDS - diff);
+  const elapsed = (now - (lastRequest.get(userId) ?? 0)) / 1000;
+  if (elapsed < COOLDOWN_SECONDS) return Math.ceil(COOLDOWN_SECONDS - elapsed);
   lastRequest.set(userId, now);
   return 0;
 }
 
-// ── /start ───────────────────────────────────────────────────────
+setInterval(
+  () => {
+    const cutoff = Date.now() - COOLDOWN_SECONDS * 10_000;
+    for (const [id, ts] of lastRequest) if (ts < cutoff) lastRequest.delete(id);
+  },
+  Math.max(COOLDOWN_SECONDS * 60_000, 60_000)
+).unref();
+
+async function editStatus(ctx, msgId, text, extra = {}) {
+  try {
+    await ctx.telegram.editMessageText(ctx.chat.id, msgId, undefined, text, extra);
+  } catch (err) {
+    if (!err.message?.includes("not modified")) throw err;
+  }
+}
+
 bot.start((ctx) => {
   stats.recordUser(ctx.from.id);
   return ctx.replyWithHTML(
-    `👋 <b>Welcome to the Video Downloader Bot!</b>\n\n` +
+    `<b>Welcome to the Video Downloader Bot!</b>\n\n` +
     `I download the best quality video from:\n` +
     `<i>${Object.keys(PLATFORMS).join(", ")}</i>\n\n` +
-    `⚡ Just send me a link!`
+    `Just send me a link!`
   );
 });
 
-// ── /help ────────────────────────────────────────────────────────
 bot.help((ctx) =>
   ctx.replyWithHTML(
     [
-      "📖 <b>How to use</b>\n",
-      "Simply paste a video link — the bot downloads and sends it automatically.\n",
+      "<b>How to use</b>\n",
+      "Paste a video link — the bot downloads and sends it automatically.\n",
       "<b>Supported Platforms:</b>",
       ...Object.keys(PLATFORMS).sort().map((p) => `• ${p}`),
       "\n<b>Commands:</b>",
@@ -49,28 +64,21 @@ bot.help((ctx) =>
   )
 );
 
-// ── /id ──────────────────────────────────────────────────────────
-bot.command("id", (ctx) =>
-  ctx.reply(`Your Telegram ID is: ${ctx.from.id}`)
-);
+bot.command("id", (ctx) => ctx.reply(`Your Telegram ID is: ${ctx.from.id}`));
 
-// ── /status ──────────────────────────────────────────────────────
 bot.command("status", (ctx) =>
   ctx.replyWithHTML(
-    `🛰 <b>Bot Status</b>\n\n` +
+    `<b>Bot Status</b>\n\n` +
     `Active downloads: <b>${queue.activeDownloads()}</b>\n` +
     `Waiting in queue: <b>${queue.queueDepth()}</b>`
   )
 );
 
-// ── /stats ───────────────────────────────────────────────────────
 bot.command("stats", (ctx) => {
-  if (!ADMIN_IDS.includes(ctx.from.id))
-    return ctx.reply("🔒 Admin only.");
+  if (!ADMIN_IDS.includes(ctx.from.id)) return ctx.reply("Admin only.");
   return ctx.replyWithHTML(stats.summary());
 });
 
-// ── URL handler ──────────────────────────────────────────────────
 bot.on(message("text"), async (ctx) => {
   const text = ctx.message.text.trim();
   if (text.startsWith("/")) return;
@@ -82,39 +90,39 @@ bot.on(message("text"), async (ctx) => {
 
   const wait = checkCooldown(ctx.from.id);
   if (wait > 0)
-    return ctx.reply(`⏳ Please wait ${wait}s before sending another link.`);
+    return ctx.reply(`Please wait ${wait}s before sending another link.`);
 
-  // Only download the first supported URL
   const url = urls.find((u) => identifyPlatform(u));
   if (!url)
-    return ctx.reply("❌ Unsupported platform. Use /help to see the list.");
+    return ctx.reply("Unsupported platform. Use /help to see the list.");
 
   const platform = identifyPlatform(url);
-  const statusMsg = await ctx.replyWithHTML(
-    `⏳ Downloading from <b>${platform}</b>...\n<i>Please wait.</i>`,
-    { reply_to_message_id: ctx.message.message_id }
-  );
 
-  let acquired = false;
+  const [statusMsg] = await Promise.all([
+    ctx.replyWithHTML(
+      `Downloading from <b>${platform}</b>...\n<i>Please wait.</i>`,
+      { reply_to_message_id: ctx.message.message_id }
+    ),
+    queue.acquire(ctx.from.id),
+  ]);
+
+  let filePath = null;
   try {
-    await queue.acquire(ctx.from.id);
-    acquired = true;
     stats.recordAttempt();
 
     const result = await download(url);
-    const { filePath, title, duration, uploader, fileSize } = result;
+    filePath = result.filePath;
+    const { title, duration, uploader, fileSize } = result;
 
     const mins = Math.floor(duration / 60);
     const secs = String(Math.floor(duration % 60)).padStart(2, "0");
     const caption =
-      `🎬 <b>${escapeHtml(title)}</b>\n` +
-      `👤 ${escapeHtml(uploader)}  •  📱 ${platform}` +
-      (duration ? `  •  ⏱ ${mins}:${secs}` : "") +
-      `\n📦 ${formatBytes(fileSize)}`;
+      `<b>${escapeHtml(title)}</b>\n` +
+      `${escapeHtml(uploader)} | ${platform}` +
+      (duration ? ` | ${mins}:${secs}` : "") +
+      `\n${formatBytes(fileSize)}`;
 
-    await ctx.telegram.editMessageText(
-      ctx.chat.id, statusMsg.message_id, undefined, "📤 Uploading..."
-    );
+    editStatus(ctx, statusMsg.message_id, "Uploading..."); 
 
     await ctx.replyWithVideo(
       { source: createReadStream(filePath) },
@@ -126,36 +134,38 @@ bot.on(message("text"), async (ctx) => {
       }
     );
 
-    cleanup(filePath);
     stats.recordSuccess(platform, ctx.from.id);
 
-    await ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id);
+    Promise.all([
+      cleanup(filePath),
+      ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {}),
+    ]);
+    filePath = null; 
 
   } catch (err) {
-    let text;
+    let errText;
     if (err instanceof FileTooLargeError) {
       stats.recordTooLarge();
-      text = `❌ <b>File too large</b>\n\n${escapeHtml(err.message)}`;
+      errText = `<b>File too large</b>\n\n${escapeHtml(err.message)}`;
     } else if (err instanceof DownloadError) {
       stats.recordFailure();
-      text = `❌ <b>Download failed</b>\n\n${escapeHtml(err.message)}`;
+      errText = `<b>Download failed</b>\n\n${escapeHtml(err.message)}`;
     } else {
       stats.recordFailure();
-      console.error("Unexpected error:", err);
-      text = "❌ <b>An unexpected error occurred.</b>";
+      console.error(err);
+      errText = "<b>An unexpected error occurred.</b>";
     }
-    await ctx.telegram.editMessageText(
-      ctx.chat.id, statusMsg.message_id, undefined, text, { parse_mode: "HTML" }
-    );
+    await editStatus(ctx, statusMsg.message_id, errText, { parse_mode: "HTML" });
   } finally {
-    if (acquired) queue.release(ctx.from.id);
+    queue.release(ctx.from.id);
+    if (filePath) cleanup(filePath); 
   }
 });
 
-// ── Error handler ────────────────────────────────────────────────
-bot.catch((err, ctx) => console.error(`[${ctx.updateType}]`, err));
+bot.catch((err, ctx) => {
+  console.error(err.message);
+});
 
-// ── Launch ───────────────────────────────────────────────────────
 await bot.telegram.setMyCommands([
   { command: "start",  description: "Welcome message" },
   { command: "id",     description: "Get your Telegram user ID" },
@@ -165,7 +175,7 @@ await bot.telegram.setMyCommands([
 ]);
 
 bot.launch({ dropPendingUpdates: true });
-console.log("✅ Bot is running...");
+console.log("Bot is running...");
 
 process.once("SIGINT",  () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

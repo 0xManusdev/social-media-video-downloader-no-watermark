@@ -1,6 +1,5 @@
 import { MAX_CONCURRENT } from "./config.js";
 
-/** Async semaphore — limits concurrent downloads */
 class Semaphore {
   #count;
   #queue = [];

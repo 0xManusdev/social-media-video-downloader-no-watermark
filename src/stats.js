@@ -1,5 +1,3 @@
-/** Simple in-memory stats — reset on restart */
-
 const state = {
   startedAt: Date.now(),
   attempted: 0,
@@ -34,14 +32,14 @@ export const stats = {
       .join("\n");
 
     return [
-      "📊 <b>Bot Statistics</b>\n",
-      `⏱ Uptime: <b>${h}h ${m}m ${s}s</b>`,
-      `👥 Total Users: <b>${state.users.size}</b>`,
-      `📥 Attempted: <b>${state.attempted}</b>`,
-      `✅ Succeeded: <b>${state.succeeded}</b>`,
-      `❌ Failed: <b>${state.failed}</b>`,
-      `📦 Too large: <b>${state.tooLarge}</b>`,
-      top ? `\n🏆 <b>Top platforms:</b>\n${top}` : "",
+      "<b>Bot Statistics</b>\n",
+      `Uptime: <b>${h}h ${m}m ${s}s</b>`,
+      `Total Users: <b>${state.users.size}</b>`,
+      `Attempted: <b>${state.attempted}</b>`,
+      `Succeeded: <b>${state.succeeded}</b>`,
+      `Failed: <b>${state.failed}</b>`,
+      `Too large: <b>${state.tooLarge}</b>`,
+      top ? `\n<b>Top platforms:</b>\n${top}` : "",
     ]
       .filter(Boolean)
       .join("\n");
