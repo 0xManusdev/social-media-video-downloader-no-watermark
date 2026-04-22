@@ -61,16 +61,13 @@ function buildArgs(outTemplate, cookiesFile) {
 
 function buildImageArgs(outTemplate, cookiesFile) {
 	const args = [
-		"--no-playlist",
+		"--format", "images",
 		"--socket-timeout", "15",
 		"--retries", "3",
 		"--geo-bypass",
 		"--user-agent", USER_AGENT,
 		"--extractor-args", "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
 		"--no-warnings",
-		"--write-thumbnail",
-		"--convert-thumbnails", "jpg",
-		"--skip-download",
 		"--output", outTemplate,
 		"--print-json",
 		"--no-simulate",
@@ -110,7 +107,12 @@ async function findDownloadedImages(dir, prefix) {
 			const ext = f.slice(f.lastIndexOf(".")).toLowerCase();
 			return IMAGE_EXTS.has(ext);
 		})
-		.sort()
+		.sort((a, b) => {
+			const matchA = a.match(new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.(\\d+)\\.[^.]+$`));
+			const matchB = b.match(new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.(\\d+)\\.[^.]+$`));
+			if (matchA && matchB) return Number(matchA[1]) - Number(matchB[1]);
+			return a.localeCompare(b, undefined, { numeric: true });
+		})
 		.map((f) => join(dir, f));
 }
 

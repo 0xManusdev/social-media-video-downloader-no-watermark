@@ -3,7 +3,7 @@ import { Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
 
 import { BOT_TOKEN, ADMIN_IDS, COOLDOWN_SECONDS, PLATFORMS } from "./config.js";
-import { extractUrls, identifyPlatform, formatBytes, escapeHtml } from "./utils.js";
+import { extractUrls, identifyPlatform, formatBytes, escapeHtml, isInstagramGallery } from "./utils.js";
 import { download, cleanup, downloadImages, cleanupImages, DownloadError, FileTooLargeError } from "./downloader.js";
 import { stats } from "./stats.js";
 import { queue } from "./queue.js";
@@ -98,6 +98,7 @@ bot.on(message("text"), async (ctx) => {
 
 	const platform = identifyPlatform(url);
 	const isTikTok = platform === "TikTok";
+	const isInstagram = platform === "Instagram";
 
 	const [statusMsg] = await Promise.all([
 		ctx.replyWithHTML(
@@ -114,15 +115,20 @@ bot.on(message("text"), async (ctx) => {
 		stats.recordAttempt();
 
 		let result;
-		try {
-			result = await download(url);
-		} catch (videoErr) {
-			// If TikTok video download fails, try image slideshow fallback
-			if (isTikTok && videoErr instanceof DownloadError) {
-				await editStatus(ctx, statusMsg.message_id, "Downloading TikTok images...");
-				result = await downloadImages(url);
-			} else {
-				throw videoErr;
+		if (isInstagram && isInstagramGallery(url)) {
+			await editStatus(ctx, statusMsg.message_id, "Downloading images...");
+			result = await downloadImages(url);
+		} else {
+			try {
+				result = await download(url);
+			} catch (videoErr) {
+				// If TikTok video download fails, try image slideshow fallback
+				if (isTikTok && videoErr instanceof DownloadError) {
+					await editStatus(ctx, statusMsg.message_id, "Downloading images...");
+					result = await downloadImages(url);
+				} else {
+					throw videoErr;
+				}
 			}
 		}
 
@@ -217,13 +223,22 @@ bot.catch((err, ctx) => {
 	console.error(err.message);
 });
 
-await bot.telegram.setMyCommands([
-	{ command: "start", description: "Welcome message" },
-	{ command: "id", description: "Get your Telegram user ID" },
-	{ command: "help", description: "How to use the bot" },
-	{ command: "status", description: "Bot queue status" },
-	{ command: "stats", description: "Statistics (admin only)" },
-]);
+try {
+  await bot.telegram.setMyCommands([
+    { command: "start",  description: "Welcome message" },
+    { command: "id",     description: "Get your Telegram user ID" },
+    { command: "help",   description: "How to use the bot" },
+    { command: "status", description: "Bot queue status" },
+    { command: "stats",  description: "Statistics (admin only)" },
+  ]);
+} catch (err) {
+  if (err.response?.error_code === 429) {
+    const retryAfter = err.response.parameters?.retry_after ?? "unknown";
+    console.warn(`setMyCommands rate limited — retry after ${retryAfter}s. Commands unchanged.`);
+  } else {
+    console.warn("setMyCommands failed:", err.message);
+  }
+}
 
 bot.launch({ dropPendingUpdates: true });
 console.log("Bot is running...");

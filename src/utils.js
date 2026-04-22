@@ -6,11 +6,32 @@ export function extractUrls(text) {
   return [...new Set(text.match(URL_RE) || [])].map(normalizeUrl);
 }
 
+export function isTikTokPhoto(url) {
+	try {
+		const u = new URL(url);
+		return u.hostname.includes("tiktok.com") && /\/photo\//.test(u.pathname);
+	} catch {
+		return false;
+	}
+}
+
+export function isInstagramGallery(url) {
+	try {
+		const u = new URL(url);
+		if (!u.hostname.includes("instagram.com")) return false;
+		return /\/(p|tv)\//.test(u.pathname);
+	} catch {
+		return false;
+	}
+}
+
 function normalizeUrl(url) {
-  try {
-    const u = new URL(url);
+	try {
+		const u = new URL(url);
     if (u.hostname.includes("tiktok.com")) {
-      return `${u.origin}${u.pathname}`;
+      // yt-dlp's TikTok extractor only matches /video/ paths — rewrite /photo/ so it's recognized
+      const pathname = u.pathname.replace(/\/photo\//, "/video/");
+      return `${u.origin}${pathname}`;
     }
     return url;
   } catch {
