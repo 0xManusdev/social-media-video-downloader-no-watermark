@@ -52,7 +52,11 @@ function buildArgs(outTemplate, cookiesFile) {
 		"--max-filesize", `${MAX_FILE_SIZE_MB}M`,
 		"--geo-bypass",
 		"--user-agent", USER_AGENT,
-		"--extractor-args", "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
+		"--extractor-args",
+		[
+			"tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
+			"instagram:api=web",
+		].join(";"),
 		"--no-warnings",
 		"--output", outTemplate,
 		"--print-json",
@@ -78,7 +82,11 @@ function buildImageArgs(outTemplate, cookiesFile) {
 		"--retries", "3",
 		"--geo-bypass",
 		"--user-agent", USER_AGENT,
-		"--extractor-args", "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
+		"--extractor-args",
+		[
+			"tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
+			"instagram:api=web",
+		].join(";"),
 		"--no-warnings",
 		"--output", outTemplate,
 		"--print-json",
@@ -168,11 +176,16 @@ function extractError(raw) {
 
 	line = line.replace(/\s*;\s*please report this issue.*/i, "").trim();
 	line = line.replace(/\s*Confirm you are on the latest version.*/i, "").trim();
-	line = line.replace(/\s*Use\s+--cookies[^.]*/gi, "").trim();
+	line = line.replace(/\s*See\s+https?:\/\/[^\s]+\s+for\s+how\s+to\s+manually\s+pass\s+cookies.*/i, "").trim();
+	line = line.replace(/\s*Otherwise,?\s*if\s+the\s+post\s+is\s+accessible.*/i, "").trim();
 
 	if (/Unable to extract webpage video data/i.test(line))
 		return "TikTok extraction failed. Try another URL or retry later.";
-	if (/(sign\s*in|login|authentication|confirm.*not.*bot)/i.test(line))
+
+	if (/empty media response/i.test(line))
+		return "Instagram returned no data. This post may require login. Ask the admin to configure cookies.";
+
+	if (/(sign\s*in|login|logged\s*in|authentication|confirm.*not.*bot)/i.test(line))
 		return "This content requires authentication on the source platform.";
 
 	return line || "Download failed — the link may be private or unsupported.";
