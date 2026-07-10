@@ -12,6 +12,19 @@ export class FileTooLargeError extends Error {}
 
 const TIMEOUT_MS = 180_000;
 
+const INSTAGRAM_APIS = ["web", "ios", "android"];
+
+/**
+ * Check if a DownloadError is Instagram auth/media related and might be resolved
+ * by trying a different extractor API.
+ * @param {Error} err
+ * @returns {boolean}
+ */
+function isInstagramAuthError(err) {
+	const msg = err.message || "";
+	return /empty media response|sign\s*in|login|logged\s*in|authentication/i.test(msg);
+}
+
 const USER_AGENT =
 	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
@@ -29,9 +42,10 @@ let _runner = null;
 /**
  * @param {string} outTemplate
  * @param {string|null} cookiesFile
+ * @param {string} [instagramApi="web"]
  * @returns {string[]}
  */
-function buildArgs(outTemplate, cookiesFile) {
+function buildArgs(outTemplate, cookiesFile, instagramApi = "web") {
 	const args = [
 		"--format",
 		[
@@ -55,7 +69,7 @@ function buildArgs(outTemplate, cookiesFile) {
 		"--extractor-args",
 		[
 			"tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
-			"instagram:api=web",
+			`instagram:api=${instagramApi}`,
 		].join(";"),
 		"--no-warnings",
 		"--output", outTemplate,
@@ -73,9 +87,10 @@ function buildArgs(outTemplate, cookiesFile) {
 /**
  * @param {string} outTemplate
  * @param {string|null} cookiesFile
+ * @param {string} [instagramApi="web"]
  * @returns {string[]}
  */
-function buildImageArgs(outTemplate, cookiesFile) {
+function buildImageArgs(outTemplate, cookiesFile, instagramApi = "web") {
 	const args = [
 		"--format", "images",
 		"--socket-timeout", "15",
@@ -85,7 +100,7 @@ function buildImageArgs(outTemplate, cookiesFile) {
 		"--extractor-args",
 		[
 			"tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
-			"instagram:api=web",
+			`instagram:api=${instagramApi}`,
 		].join(";"),
 		"--no-warnings",
 		"--output", outTemplate,
@@ -287,11 +302,12 @@ getRunner().catch(() => {});
 /** @typedef {{ type: "images", imagePaths: string[], title: string, uploader: string, platform: string, count: number }} ImagesResult */
 
 /**
- * Download a video from a URL.
+ * Core video download — tries once with the given Instagram API.
  * @param {string} url
+ * @param {string} instagramApi
  * @returns {Promise<VideoResult>}
  */
-export async function download(url) {
+async function doDownload(url, instagramApi) {
 	const runner = await getRunner();
 
 	const fileId = randomBytes(6).toString("hex");
@@ -300,7 +316,7 @@ export async function download(url) {
 	const cookiesArg =
 		COOKIES_FILE && (await fileExists(COOKIES_FILE)) ? COOKIES_FILE : null;
 
-	const args = [...buildArgs(outTemplate, cookiesArg), url];
+	const args = [...buildArgs(outTemplate, cookiesArg, instagramApi), url];
 
 	let stdout;
 	try {
@@ -343,11 +359,12 @@ export async function download(url) {
 }
 
 /**
- * Download images (slideshow/gallery) from a URL.
+ * Core image download — tries once with the given Instagram API.
  * @param {string} url
+ * @param {string} instagramApi
  * @returns {Promise<ImagesResult>}
  */
-export async function downloadImages(url) {
+async function doDownloadImages(url, instagramApi) {
 	const runner = await getRunner();
 
 	const fileId = randomBytes(6).toString("hex");
@@ -356,7 +373,7 @@ export async function downloadImages(url) {
 	const cookiesArg =
 		COOKIES_FILE && (await fileExists(COOKIES_FILE)) ? COOKIES_FILE : null;
 
-	const args = [...buildImageArgs(outTemplate, cookiesArg), url];
+	const args = [...buildImageArgs(outTemplate, cookiesArg, instagramApi), url];
 
 	let stdout;
 	try {
@@ -387,6 +404,50 @@ export async function downloadImages(url) {
 		platform: info.extractor_key || "TikTok",
 		count:    imagePaths.length,
 	};
+}
+
+/**
+ * Download a video from a URL.
+ * Tries Instagram API fallbacks (web → ios → android) on auth errors.
+ * @param {string} url
+ * @returns {Promise<VideoResult>}
+ */
+export async function download(url) {
+	const isInstagram = url.includes("instagram.com");
+	const apis = isInstagram ? INSTAGRAM_APIS : ["web"];
+	let lastErr;
+
+	for (const api of apis) {
+		try {
+			return await doDownload(url, api);
+		} catch (err) {
+			lastErr = err;
+			if (!isInstagram || !isInstagramAuthError(err)) throw err;
+		}
+	}
+	throw lastErr;
+}
+
+/**
+ * Download images (slideshow/gallery) from a URL.
+ * Tries Instagram API fallbacks (web → ios → android) on auth errors.
+ * @param {string} url
+ * @returns {Promise<ImagesResult>}
+ */
+export async function downloadImages(url) {
+	const isInstagram = url.includes("instagram.com");
+	const apis = isInstagram ? INSTAGRAM_APIS : ["web"];
+	let lastErr;
+
+	for (const api of apis) {
+		try {
+			return await doDownloadImages(url, api);
+		} catch (err) {
+			lastErr = err;
+			if (!isInstagram || !isInstagramAuthError(err)) throw err;
+		}
+	}
+	throw lastErr;
 }
 
 /**
