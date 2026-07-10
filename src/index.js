@@ -25,7 +25,7 @@ function checkCooldown(userId) {
 
 setInterval(
 	() => {
-		const cutoff = Date.now() - COOLDOWN_SECONDS * 10_000;
+		const cutoff = Date.now() - COOLDOWN_SECONDS * 1000 * 10; // 10x cooldown
 		for (const [id, ts] of lastRequest) if (ts < cutoff) lastRequest.delete(id);
 	},
 	Math.max(COOLDOWN_SECONDS * 60_000, 60_000)
@@ -138,7 +138,7 @@ bot.on(message("text"), async (ctx) => {
 
 			const caption = `<b>${escapeHtml(title)}</b>\n${escapeHtml(uploader)} | ${platform} | ${count} image${count > 1 ? "s" : ""}`;
 
-			editStatus(ctx, statusMsg.message_id, "Uploading images...");
+			editStatus(ctx, statusMsg.message_id, "Uploading images...").catch(() => {});
 
 			// Telegram media groups: max 10 items
 			const chunks = [];
@@ -161,8 +161,8 @@ bot.on(message("text"), async (ctx) => {
 
 			Promise.all([
 				cleanupImages(imagePaths),
-				ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => { }),
-			]);
+				ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {}),
+			]).catch(() => {});
 			imagePaths = null;
 
 		} else {
@@ -177,7 +177,7 @@ bot.on(message("text"), async (ctx) => {
 				(duration ? ` | ${mins}:${secs}` : "") +
 				`\n${formatBytes(fileSize)}`;
 
-			editStatus(ctx, statusMsg.message_id, "Uploading...");
+			editStatus(ctx, statusMsg.message_id, "Uploading...").catch(() => {});
 
 			await ctx.replyWithVideo(
 				{ source: createReadStream(filePath) },
@@ -193,8 +193,8 @@ bot.on(message("text"), async (ctx) => {
 
 			Promise.all([
 				cleanup(filePath),
-				ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => { }),
-			]);
+				ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {}),
+			]).catch(() => {});
 			filePath = null;
 		}
 
@@ -214,34 +214,45 @@ bot.on(message("text"), async (ctx) => {
 		await editStatus(ctx, statusMsg.message_id, errText, { parse_mode: "HTML" });
 	} finally {
 		queue.release(ctx.from.id);
-		if (filePath) cleanup(filePath);
-		if (imagePaths) cleanupImages(imagePaths);
+		if (filePath) cleanup(filePath).catch(() => {});
+		if (imagePaths) cleanupImages(imagePaths).catch(() => {});
 	}
 });
 
 bot.catch((err, ctx) => {
-	console.error(err.message);
+	console.error("Unhandled bot error:", err.message);
 });
 
 try {
-  await bot.telegram.setMyCommands([
-    { command: "start",  description: "Welcome message" },
-    { command: "id",     description: "Get your Telegram user ID" },
-    { command: "help",   description: "How to use the bot" },
-    { command: "status", description: "Bot queue status" },
-    { command: "stats",  description: "Statistics (admin only)" },
-  ]);
+	await bot.telegram.setMyCommands([
+		{ command: "start",  description: "Welcome message" },
+		{ command: "id",     description: "Get your Telegram user ID" },
+		{ command: "help",   description: "How to use the bot" },
+		{ command: "status", description: "Bot queue status" },
+		{ command: "stats",  description: "Statistics (admin only)" },
+	]);
 } catch (err) {
-  if (err.response?.error_code === 429) {
-    const retryAfter = err.response.parameters?.retry_after ?? "unknown";
-    console.warn(`setMyCommands rate limited — retry after ${retryAfter}s. Commands unchanged.`);
-  } else {
-    console.warn("setMyCommands failed:", err.message);
-  }
+	if (err.response?.error_code === 429) {
+		const retryAfter = err.response.parameters?.retry_after ?? "unknown";
+		console.warn(`setMyCommands rate limited — retry after ${retryAfter}s. Commands unchanged.`);
+	} else {
+		console.warn("setMyCommands failed:", err.message);
+	}
+}
+
+async function shutdown(signal) {
+	console.log(`Received ${signal}, shutting down...`);
+	try { await bot.stop(signal); } catch {}
+	process.exit(0);
 }
 
 bot.launch({ dropPendingUpdates: true });
 console.log("Bot is running...");
 
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+// Periodic cleanup of idle per-user semaphores
+setInterval(() => queue.cleanupIdleUsers(), 600_000).unref();
+// Periodic cleanup of stale stats entries
+setInterval(() => stats.cleanup(), 3_600_000).unref();
+
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));

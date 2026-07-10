@@ -1,6 +1,9 @@
 # Environment
 .env
 
+# yt-dlp cache
+cache.sqlite
+
 # Python
 __pycache__/
 *.py[cod]
