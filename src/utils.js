@@ -21,7 +21,8 @@ export function extractUrls(text) {
 }
 
 /**
- * Check if an Instagram URL points to a post or TV (gallery-capable).
+ * Check if an Instagram URL points to a post (gallery-capable).
+ * Reels (/reel/) are videos, not galleries.
  * @param {string} url
  * @returns {boolean}
  */
@@ -29,7 +30,7 @@ export function isInstagramGallery(url) {
 	try {
 		const u = new URL(url);
 		if (!u.hostname.includes("instagram.com")) return false;
-		return /\/(p|tv|reel)\//.test(u.pathname);
+		return /\/(p|tv)\//.test(u.pathname);
 	} catch {
 		return false;
 	}
