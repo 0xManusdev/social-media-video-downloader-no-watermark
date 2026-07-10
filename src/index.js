@@ -35,7 +35,9 @@ async function editStatus(ctx, msgId, text, extra = {}) {
 	try {
 		await ctx.telegram.editMessageText(ctx.chat.id, msgId, undefined, text, extra);
 	} catch (err) {
-		if (!err.message?.includes("not modified")) throw err;
+		const msg = err.message || "";
+		const ignore = ["not modified", "message to edit not found", "message can't be edited"];
+		if (!ignore.some((s) => msg.includes(s))) throw err;
 	}
 }
 

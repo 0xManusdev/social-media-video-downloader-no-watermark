@@ -21,8 +21,11 @@ const INSTAGRAM_APIS = ["web", "ios", "android"];
  * @returns {boolean}
  */
 function isInstagramAuthError(err) {
+	// Check the explicit flag set by spawnRunner (most reliable)
+	if (err._instagramAuth) return true;
+	// Fallback: check the formatted error message
 	const msg = err.message || "";
-	return /empty media response|sign\s*in|login|logged\s*in|authentication/i.test(msg);
+	return /(sign\s*in|login|logged\s*in|authentication|this content requires)/i.test(msg);
 }
 
 const USER_AGENT =
@@ -265,7 +268,12 @@ function spawnRunner(runner, args) {
 					settle(reject, e);
 					return;
 				}
-				settle(reject, new DownloadError(extractError(stderr)));
+				const err = new DownloadError(extractError(stderr));
+				// Tag for isInstagramAuthError: check raw stderr (not the reformatted message)
+				if (/(empty media response|sign\s*in|login|logged\s*in|authentication)/i.test(stderr)) {
+					err._instagramAuth = true;
+				}
+				settle(reject, err);
 				return;
 			}
 			settle(resolve, stdout);
@@ -302,28 +310,40 @@ getRunner().catch(() => {});
 /** @typedef {{ type: "images", imagePaths: string[], title: string, uploader: string, platform: string, count: number }} ImagesResult */
 
 /**
- * Core video download — tries once with the given Instagram API.
+ * Single download attempt — shared between video and image modes.
  * @param {string} url
  * @param {string} instagramApi
- * @returns {Promise<VideoResult>}
+ * @param {"video"|"images"} mode
+ * @returns {Promise<VideoResult|ImagesResult>}
  */
-async function doDownload(url, instagramApi) {
+async function doDownloadMedia(url, instagramApi, mode) {
+	const isVideo = mode === "video";
 	const runner = await getRunner();
 
 	const fileId = randomBytes(6).toString("hex");
-	const outTemplate = join(DOWNLOAD_DIR, `${fileId}.%(ext)s`);
+	const outTemplate = join(
+		DOWNLOAD_DIR,
+		isVideo ? `${fileId}.%(ext)s` : `${fileId}.%(autonumber)s.%(ext)s`
+	);
 
 	const cookiesArg =
 		COOKIES_FILE && (await fileExists(COOKIES_FILE)) ? COOKIES_FILE : null;
 
-	const args = [...buildArgs(outTemplate, cookiesArg, instagramApi), url];
+	const buildFn = isVideo ? buildArgs : buildImageArgs;
+	const args = [...buildFn(outTemplate, cookiesArg, instagramApi), url];
 
 	let stdout;
 	try {
 		stdout = await spawnRunner(runner, args);
 	} catch (err) {
-		const partial = await findDownloadedFile(DOWNLOAD_DIR, fileId);
-		if (partial) unlink(partial).catch(() => {});
+		// Clean up partial files
+		if (isVideo) {
+			const partial = await findDownloadedFile(DOWNLOAD_DIR, fileId);
+			if (partial) unlink(partial).catch(() => {});
+		} else {
+			const images = await findDownloadedImages(DOWNLOAD_DIR, fileId);
+			for (const img of images) unlink(img).catch(() => {});
+		}
 		throw err;
 	}
 
@@ -336,62 +356,28 @@ async function doDownload(url, instagramApi) {
 		if (lastJson) info = JSON.parse(lastJson);
 	} catch { }
 
-	const filePath = await findDownloadedFile(DOWNLOAD_DIR, fileId);
-	if (!filePath) throw new DownloadError("File not found after download.");
+	if (isVideo) {
+		const filePath = await findDownloadedFile(DOWNLOAD_DIR, fileId);
+		if (!filePath) throw new DownloadError("File not found after download.");
 
-	const { size } = await stat(filePath);
-	if (size > MAX_FILE_SIZE_BYTES) {
-		unlink(filePath).catch(() => {});
-		throw new FileTooLargeError(
-			`File is ${(size / 1024 / 1024).toFixed(1)} MB — exceeds the ${MAX_FILE_SIZE_MB} MB Telegram limit.`
-		);
+		const { size } = await stat(filePath);
+		if (size > MAX_FILE_SIZE_BYTES) {
+			unlink(filePath).catch(() => {});
+			throw new FileTooLargeError(
+				`File is ${(size / 1024 / 1024).toFixed(1)} MB — exceeds the ${MAX_FILE_SIZE_MB} MB Telegram limit.`
+			);
+		}
+
+		return {
+			type:     "video",
+			filePath,
+			title:    info.title         || "Video",
+			duration: info.duration      || 0,
+			uploader: info.uploader      || info.channel || "Unknown",
+			platform: info.extractor_key || "Unknown",
+			fileSize: size,
+		};
 	}
-
-	return {
-		type:     "video",
-		filePath,
-		title:    info.title         || "Video",
-		duration: info.duration      || 0,
-		uploader: info.uploader      || info.channel || "Unknown",
-		platform: info.extractor_key || "Unknown",
-		fileSize: size,
-	};
-}
-
-/**
- * Core image download — tries once with the given Instagram API.
- * @param {string} url
- * @param {string} instagramApi
- * @returns {Promise<ImagesResult>}
- */
-async function doDownloadImages(url, instagramApi) {
-	const runner = await getRunner();
-
-	const fileId = randomBytes(6).toString("hex");
-	const outTemplate = join(DOWNLOAD_DIR, `${fileId}.%(autonumber)s.%(ext)s`);
-
-	const cookiesArg =
-		COOKIES_FILE && (await fileExists(COOKIES_FILE)) ? COOKIES_FILE : null;
-
-	const args = [...buildImageArgs(outTemplate, cookiesArg, instagramApi), url];
-
-	let stdout;
-	try {
-		stdout = await spawnRunner(runner, args);
-	} catch (err) {
-		const images = await findDownloadedImages(DOWNLOAD_DIR, fileId);
-		for (const img of images) unlink(img).catch(() => {});
-		throw err;
-	}
-
-	let info = {};
-	try {
-		const lastJson = stdout
-			.trim()
-			.split("\n")
-			.findLast((l) => l.startsWith("{"));
-		if (lastJson) info = JSON.parse(lastJson);
-	} catch { }
 
 	const imagePaths = await findDownloadedImages(DOWNLOAD_DIR, fileId);
 	if (!imagePaths.length) throw new DownloadError("No images found after download.");
@@ -419,7 +405,7 @@ export async function download(url) {
 
 	for (const api of apis) {
 		try {
-			return await doDownload(url, api);
+			return /** @type {VideoResult} */ (await doDownloadMedia(url, api, "video"));
 		} catch (err) {
 			lastErr = err;
 			if (!isInstagram || !isInstagramAuthError(err)) throw err;
@@ -441,7 +427,7 @@ export async function downloadImages(url) {
 
 	for (const api of apis) {
 		try {
-			return await doDownloadImages(url, api);
+			return /** @type {ImagesResult} */ (await doDownloadMedia(url, api, "images"));
 		} catch (err) {
 			lastErr = err;
 			if (!isInstagram || !isInstagramAuthError(err)) throw err;
