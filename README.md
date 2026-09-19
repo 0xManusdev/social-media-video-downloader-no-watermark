@@ -112,10 +112,19 @@ few MB below `MAX_FILE_SIZE_MB`, so an oversized source steps down in resolution
 failing — a long 1080p YouTube video is delivered at 720p rather than rejected. Raising
 `MAX_FILE_SIZE_MB` above 50 requires a self-hosted Telegram Bot API server.
 
-After download, the container is inspected. DASH sources (Instagram in particular) arrive as
-**fragmented MP4** with no keyframe index, which desktop players tolerate but mobile decoders
-do not: the picture freezes while the sound keeps playing. Such files are rewritten with a
-stream copy — no re-encoding — that restores the index and moves `moov` to the front.
+Because a format ladder can only express a preference, every downloaded video is then
+inspected and, if needed, repaired:
+
+| Finding | Action | Cost |
+|---------|--------|------|
+| H.264/AAC with `moov` first | nothing | — |
+| Fragmented MP4, or `moov` after `mdat` | stream copy | no re-encoding, no quality loss |
+| Any other video or audio codec (VP9, AV1, Opus…) | re-encode to H.264/AAC | slow and lossy, but rare |
+
+Both repairs address the same failure. On a phone Telegram decodes in hardware, so a codec the
+device has no decoder for — or a container with no keyframe index — shows the first frame and
+then freezes while the audio plays on. Desktop clients fall back to software decoding and hide
+the problem, which is why such files look fine on a computer.
 
 ## Troubleshooting
 
@@ -138,6 +147,9 @@ Netscape format (any "Get cookies.txt" extension).
 
 ### The picture freezes on phones while the audio plays
 
-The file was delivered as fragmented MP4 (see *How media is selected*). This is handled
-automatically; if it still happens, check the logs for `Could not normalize` — it means
-ffmpeg was not found on `PATH`.
+Either the container had no keyframe index or the codec is not hardware-decodable on the
+device (see *How media is selected*). Both are repaired automatically; the bot logs
+`Normalized video (remux|transcode: reason)` when it acts.
+
+If it still happens, check the logs for `Could not normalize` — that means ffmpeg or ffprobe
+was missing from `PATH`, so the file was sent exactly as downloaded.

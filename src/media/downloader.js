@@ -6,7 +6,7 @@ import { DOWNLOAD_DIR, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, COOKIES_FILE } fro
 import { runYtDlp, isAuthError } from "./ytdlp.js";
 import { buildVideoArgs, buildImageArgs } from "./args.js";
 import { findDownloadedFile, findDownloadedImages, fileExists, cleanup, cleanupImages } from "./files.js";
-import { ensureStreamableMp4 } from "./mp4.js";
+import { ensurePlayable } from "./mp4.js";
 import { DownloadError, FileTooLargeError } from "./errors.js";
 
 export { DownloadError, FileTooLargeError };
@@ -52,19 +52,28 @@ async function finishVideo(fileId, info) {
 	const filePath = await findDownloadedFile(DOWNLOAD_DIR, fileId);
 	if (!filePath) throw new DownloadError("File not found after download.");
 
-	const { size } = await stat(filePath);
-	if (size > MAX_FILE_SIZE_BYTES) {
+	const tooLarge = (bytes) => {
 		unlink(filePath).catch(() => {});
 		throw new FileTooLargeError(
-			`File is ${(size / 1024 / 1024).toFixed(1)} MB — exceeds the ${MAX_FILE_SIZE_MB} MB Telegram limit.`
+			`File is ${(bytes / 1024 / 1024).toFixed(1)} MB — exceeds the ${MAX_FILE_SIZE_MB} MB Telegram limit.`
 		);
-	}
+	};
 
-	// Best effort: a fragmented file still plays on desktop, so never fail the download over it.
+	const { size } = await stat(filePath);
+	if (size > MAX_FILE_SIZE_BYTES) tooLarge(size);
+
+	// Best effort: an unnormalized file still plays somewhere, so never fail the whole
+	// download over it — the user gets the video plus a warning in the logs.
+	let finalSize = size;
 	try {
-		const { remuxed } = await ensureStreamableMp4(filePath);
-		if (remuxed) console.log(`Normalized fragmented MP4: ${filePath}`);
+		const { action, reason } = await ensurePlayable(filePath);
+		if (action !== "none") {
+			console.log(`Normalized video (${action}: ${reason}): ${filePath}`);
+			finalSize = (await stat(filePath)).size;
+			if (finalSize > MAX_FILE_SIZE_BYTES) tooLarge(finalSize);
+		}
 	} catch (err) {
+		if (err instanceof FileTooLargeError) throw err;
 		console.warn(`Could not normalize ${filePath}: ${err.message}`);
 	}
 
@@ -77,7 +86,7 @@ async function finishVideo(fileId, info) {
 		height:   info.height        || 0,
 		uploader: info.uploader      || info.channel || "Unknown",
 		platform: info.extractor_key || "Unknown",
-		fileSize: size,
+		fileSize: finalSize,
 	};
 }
 
