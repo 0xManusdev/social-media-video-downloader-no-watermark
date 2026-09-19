@@ -19,6 +19,10 @@ const DEFAULT_TIMEOUT_MS =
 const ENV_TIMEOUT_MS = Number(process.env.DOWNLOAD_TIMEOUT_MS);
 const TIMEOUT_MS = ENV_TIMEOUT_MS > 0 ? ENV_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
 
+// Headroom under MAX_FILE_SIZE_MB for the audio track and container overhead, so the
+// video stream alone is picked below the cap rather than blowing the Telegram limit.
+const VIDEO_SIZE_CAP_MB = Math.max(MAX_FILE_SIZE_MB - 5, 5);
+
 // yt-dlp's Instagram extractor only knows these `app_id` aliases (web → www.instagram.com, ios → i.instagram.com)
 const INSTAGRAM_APIS = ["web", "ios"];
 
@@ -99,15 +103,24 @@ function buildBaseArgs({ outTemplate, cookiesFile, instagramApi, isInstagram }) 
  */
 function buildArgs(opts) {
 	return [
+		// Telegram's player is only dependable with H.264 video + AAC audio in MP4: AV1 and
+		// VP9 play as a black screen on many clients, and Opus in MP4 plays silently. Ask for
+		// avc1+mp4a first, capped by size so an oversized source degrades in resolution
+		// instead of failing outright, and only fall back to looser matches.
 		"--format",
 		[
-			"best[ext=mp4]",
+			`bestvideo[vcodec^=avc1][filesize_approx<${VIDEO_SIZE_CAP_MB}M]+bestaudio[acodec^=mp4a]`,
+			"bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]",
 			"bestvideo[ext=mp4]+bestaudio[ext=m4a]",
+			"best[ext=mp4]",
+			"bestvideo+bestaudio",
 			"best",
 		].join("/"),
 		"--merge-output-format", "mp4",
-		"--postprocessor-args",
-		"ffmpeg:-c:v copy -c:a copy -movflags +faststart",
+		// The merger already stream-copies; scope the args to it so faststart is the only
+		// addition. A blanket "ffmpeg:" prefix would force -c copy on every other
+		// postprocessor too, which is what produced unplayable containers.
+		"--postprocessor-args", "Merger:-movflags +faststart",
 		"--no-playlist",
 		"--concurrent-fragments", "16",
 		"--fragment-retries", "5",

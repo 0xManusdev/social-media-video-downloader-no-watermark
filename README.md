@@ -91,6 +91,20 @@ message is misleading and waiting does not help.
               -e COOKIES_FILE=/app/cookies.txt  ...
    ```
 
+### Instagram videos arrive without sound
+
+Logged out, Instagram's API reports `has_audio: false` and serves video-only streams — the
+downloaded file genuinely contains a single video track, so there is nothing to recover
+locally. Setting `COOKIES_FILE` is the only fix.
+
+### Video quality and codec
+
+Formats are requested as H.264 + AAC in MP4, because Telegram's player renders AV1 and VP9
+as a black screen on many clients and plays Opus-in-MP4 silently. The video stream is also
+capped a few MB below `MAX_FILE_SIZE_MB`, so an oversized source steps down in resolution
+instead of failing — a long 1080p YouTube video is delivered at 720p rather than rejected.
+Raising `MAX_FILE_SIZE_MB` above 50 requires a self-hosted Telegram Bot API server.
+
 ## Architecture
 
 ```
