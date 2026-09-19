@@ -3,8 +3,8 @@ import { Telegraf } from "telegraf";
 import { message } from "telegraf/filters";
 
 import { BOT_TOKEN, ADMIN_IDS, COOLDOWN_SECONDS, PLATFORMS } from "./config.js";
-import { extractUrls, identifyPlatform, formatBytes, escapeHtml, isInstagramGallery } from "./utils.js";
-import { download, cleanup, downloadImages, cleanupImages, DownloadError, FileTooLargeError } from "./downloader.js";
+import { extractUrls, identifyPlatform, formatBytes, escapeHtml } from "./utils.js";
+import { download, cleanup, downloadImages, cleanupImages, isAuthError, DownloadError, FileTooLargeError } from "./downloader.js";
 import { stats } from "./stats.js";
 import { queue } from "./queue.js";
 
@@ -90,47 +90,43 @@ bot.on(message("text"), async (ctx) => {
 	const urls = extractUrls(text);
 	if (!urls.length) return;
 
-	const wait = checkCooldown(ctx.from.id);
-	if (wait > 0)
-		return ctx.reply(`Please wait ${wait}s before sending another link.`);
-
 	const url = urls.find((u) => identifyPlatform(u));
 	if (!url)
 		return ctx.reply("Unsupported platform. Use /help to see the list.");
+
+	const wait = checkCooldown(ctx.from.id);
+	if (wait > 0)
+		return ctx.reply(`Please wait ${wait}s before sending another link.`);
 
 	const platform = identifyPlatform(url);
 	const isTikTok = platform === "TikTok";
 	const isInstagram = platform === "Instagram";
 
-	const [statusMsg] = await Promise.all([
-		ctx.replyWithHTML(
-			`Downloading from <b>${platform}</b>...\n<i>Please wait.</i>`,
-			{ reply_to_message_id: ctx.message.message_id }
-		),
-		queue.acquire(ctx.from.id),
-	]);
+	await queue.acquire(ctx.from.id);
 
 	let filePath = null;
 	let imagePaths = null;
+	let statusMsg;
 
 	try {
+		statusMsg = await ctx.replyWithHTML(
+			`Downloading from <b>${platform}</b>...\n<i>Please wait.</i>`,
+			{ reply_to_message_id: ctx.message.message_id }
+		);
+
 		stats.recordAttempt();
 
 		let result;
-		if (isInstagram && isInstagramGallery(url)) {
-			await editStatus(ctx, statusMsg.message_id, "Downloading images...");
-			result = await downloadImages(url);
-		} else {
-			try {
-				result = await download(url);
-			} catch (videoErr) {
-				// If TikTok video download fails, try image slideshow fallback
-				if (isTikTok && videoErr instanceof DownloadError) {
-					await editStatus(ctx, statusMsg.message_id, "Downloading images...");
-					result = await downloadImages(url);
-				} else {
-					throw videoErr;
-				}
+		try {
+			result = await download(url);
+		} catch (videoErr) {
+			// TikTok/Instagram: a "no video" failure usually means a photo post — retry in image mode.
+			// Auth/rate-limit failures would fail again in image mode, so surface them directly.
+			if ((isTikTok || isInstagram) && videoErr instanceof DownloadError && !isAuthError(videoErr)) {
+				await editStatus(ctx, statusMsg.message_id, "Downloading images...");
+				result = await downloadImages(url);
+			} else {
+				throw videoErr;
 			}
 		}
 
@@ -213,7 +209,7 @@ bot.on(message("text"), async (ctx) => {
 			console.error(err);
 			errText = "<b>An unexpected error occurred.</b>";
 		}
-		await editStatus(ctx, statusMsg.message_id, errText, { parse_mode: "HTML" });
+		if (statusMsg) await editStatus(ctx, statusMsg.message_id, errText, { parse_mode: "HTML" });
 	} finally {
 		queue.release(ctx.from.id);
 		if (filePath) cleanup(filePath).catch(() => {});

@@ -39,14 +39,11 @@ export const stats = {
 	 */
 	recordUser(userId) { state.users.set(userId, Date.now()); },
 
-	/** Remove stale users and zeroed platform counters. */
+	/** Remove stale users. */
 	cleanup() {
 		const cutoff = Date.now() - USER_CLEANUP_MS;
 		for (const [id, ts] of state.users) {
 			if (ts < cutoff) state.users.delete(id);
-		}
-		for (const [platform, count] of Object.entries(state.byPlatform)) {
-			if (count <= 0) delete state.byPlatform[platform];
 		}
 	},
 

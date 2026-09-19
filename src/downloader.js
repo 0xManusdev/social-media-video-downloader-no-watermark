@@ -10,22 +10,29 @@ const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 export class DownloadError extends Error {}
 export class FileTooLargeError extends Error {}
 
-const TIMEOUT_MS = 180_000;
+// Minimum throughput assumed for a slow network, used to size the timeout
+// so it scales with MAX_FILE_SIZE_MB instead of being a disconnected constant.
+const MIN_THROUGHPUT_BYTES_PER_SEC = 300 * 1024; // 300 KB/s
+const BASE_TIMEOUT_MS = 60_000; // metadata extraction + retries overhead
+const DEFAULT_TIMEOUT_MS =
+	BASE_TIMEOUT_MS + Math.ceil((MAX_FILE_SIZE_BYTES / MIN_THROUGHPUT_BYTES_PER_SEC) * 1000);
+const ENV_TIMEOUT_MS = Number(process.env.DOWNLOAD_TIMEOUT_MS);
+const TIMEOUT_MS = ENV_TIMEOUT_MS > 0 ? ENV_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
 
-const INSTAGRAM_APIS = ["web", "ios", "android"];
+// yt-dlp's Instagram extractor only knows these `app_id` aliases (web → www.instagram.com, ios → i.instagram.com)
+const INSTAGRAM_APIS = ["web", "ios"];
+
+const AUTH_ERROR_RE =
+	/(empty media response|sign\s*in|login|logged\s*in|authentication|rate-limit|not granting access|cookies are no longer valid)/i;
 
 /**
- * Check if a DownloadError is Instagram auth/media related and might be resolved
- * by trying a different extractor API.
+ * True when the failure is an auth / rate-limit / access problem on the source platform,
+ * i.e. retrying with the same credentials or a different mode is pointless.
  * @param {Error} err
  * @returns {boolean}
  */
-function isInstagramAuthError(err) {
-	// Check the explicit flag set by spawnRunner (most reliable)
-	if (err._instagramAuth) return true;
-	// Fallback: check the formatted error message
-	const msg = err.message || "";
-	return /(sign\s*in|login|logged\s*in|authentication|this content requires)/i.test(msg);
+export function isAuthError(err) {
+	return Boolean(err?.authError) || AUTH_ERROR_RE.test(err?.message || "");
 }
 
 const USER_AGENT =
@@ -43,37 +50,21 @@ const RUNNER_CANDIDATES = [
 let _runner = null;
 
 /**
+ * CLI flags shared between video and image download modes.
  * @param {string} outTemplate
  * @param {string|null} cookiesFile
- * @param {string} [instagramApi="web"]
+ * @param {string} instagramApi
  * @returns {string[]}
  */
-function buildArgs(outTemplate, cookiesFile, instagramApi = "web") {
+function buildBaseArgs(outTemplate, cookiesFile, instagramApi) {
 	const args = [
-		"--format",
-		[
-			"best[ext=mp4]",
-			"bestvideo[ext=mp4]+bestaudio[ext=m4a]",
-			"best",
-		].join("/"),
-		"--merge-output-format", "mp4",
-		"--postprocessor-args",
-		"ffmpeg:-c:v copy -c:a copy -movflags +faststart",
-		"--no-playlist",
-		"--concurrent-fragments", "16",
 		"--socket-timeout", "15",
 		"--retries", "3",
-		"--fragment-retries", "5",
-		"--buffer-size", "16K",
-		"--http-chunk-size", "10M",
-		"--max-filesize", `${MAX_FILE_SIZE_MB}M`,
 		"--geo-bypass",
 		"--user-agent", USER_AGENT,
-		"--extractor-args",
-		[
-			"tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
-			`instagram:api=${instagramApi}`,
-		].join(";"),
+		// One --extractor-args per extractor: yt-dlp does not accept several IE keys in a single value
+		"--extractor-args", "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
+		"--extractor-args", `instagram:app_id=${instagramApi}`,
 		"--no-warnings",
 		"--output", outTemplate,
 		"--print-json",
@@ -93,29 +84,44 @@ function buildArgs(outTemplate, cookiesFile, instagramApi = "web") {
  * @param {string} [instagramApi="web"]
  * @returns {string[]}
  */
-function buildImageArgs(outTemplate, cookiesFile, instagramApi = "web") {
-	const args = [
-		"--format", "images",
-		"--socket-timeout", "15",
-		"--retries", "3",
-		"--geo-bypass",
-		"--user-agent", USER_AGENT,
-		"--extractor-args",
+function buildArgs(outTemplate, cookiesFile, instagramApi = "web") {
+	return [
+		"--format",
 		[
-			"tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
-			`instagram:api=${instagramApi}`,
-		].join(";"),
-		"--no-warnings",
-		"--output", outTemplate,
-		"--print-json",
-		"--no-simulate",
+			"best[ext=mp4]",
+			"bestvideo[ext=mp4]+bestaudio[ext=m4a]",
+			"best",
+		].join("/"),
+		"--merge-output-format", "mp4",
+		"--postprocessor-args",
+		"ffmpeg:-c:v copy -c:a copy -movflags +faststart",
+		"--no-playlist",
+		"--concurrent-fragments", "16",
+		"--fragment-retries", "5",
+		"--buffer-size", "16K",
+		"--http-chunk-size", "10M",
+		"--max-filesize", `${MAX_FILE_SIZE_MB}M`,
+		...buildBaseArgs(outTemplate, cookiesFile, instagramApi),
 	];
+}
 
-	if (cookiesFile) {
-		args.push("--cookies", cookiesFile);
-	}
-
-	return args;
+/**
+ * @param {string} outTemplate
+ * @param {string|null} cookiesFile
+ * @param {string} instagramApi
+ * @param {boolean} isInstagram
+ * @returns {string[]}
+ */
+function buildImageArgs(outTemplate, cookiesFile, instagramApi, isInstagram) {
+	// Instagram exposes photos only as thumbnails (no "images" format), and raises
+	// "There is no video in this post" unless no-formats errors are ignored.
+	const modeArgs = isInstagram
+		? ["--ignore-no-formats-error", "--skip-download", "--write-thumbnail"]
+		: ["--format", "images"];
+	return [
+		...modeArgs,
+		...buildBaseArgs(outTemplate, cookiesFile, instagramApi),
+	];
 }
 
 /**
@@ -203,6 +209,12 @@ function extractError(raw) {
 	if (/empty media response/i.test(line))
 		return "Instagram returned no data. This post may require login. Ask the admin to configure cookies.";
 
+	if (/rate-limit|not granting access/i.test(line))
+		return "Instagram is rate-limiting anonymous access. Retry later or ask the admin to configure cookies.";
+
+	if (/cookies are no longer valid/i.test(line))
+		return "The configured Instagram cookies have expired. Ask the admin to refresh them.";
+
 	if (/(sign\s*in|login|logged\s*in|authentication|confirm.*not.*bot)/i.test(line))
 		return "This content requires authentication on the source platform.";
 
@@ -269,10 +281,8 @@ function spawnRunner(runner, args) {
 					return;
 				}
 				const err = new DownloadError(extractError(stderr));
-				// Tag for isInstagramAuthError: check raw stderr (not the reformatted message)
-				if (/(empty media response|sign\s*in|login|logged\s*in|authentication)/i.test(stderr)) {
-					err._instagramAuth = true;
-				}
+				// Tag from raw stderr, before extractError() rewrites the message
+				if (AUTH_ERROR_RE.test(stderr)) err.authError = true;
 				settle(reject, err);
 				return;
 			}
@@ -288,17 +298,23 @@ function spawnRunner(runner, args) {
 async function getRunner() {
 	if (_runner) return _runner;
 
+	let lastErr = null;
 	for (const candidate of RUNNER_CANDIDATES) {
 		try {
 			await spawnRunner(candidate, ["--version"]);
 			_runner = candidate;
 			return _runner;
 		} catch (err) {
-			if (err.code === "NOT_FOUND") continue;
-			continue;
+			if (err.code !== "NOT_FOUND") {
+				lastErr = err;
+				console.warn(`yt-dlp candidate "${candidate.cmd}" failed:`, err.message);
+			}
 		}
 	}
 
+	if (lastErr) {
+		throw new DownloadError(`yt-dlp found but failed to run: ${lastErr.message}`);
+	}
 	throw new DownloadError(
 		"yt-dlp not found. Run: pip install yt-dlp  OR  add the yt-dlp binary to PATH."
 	);
@@ -329,8 +345,13 @@ async function doDownloadMedia(url, instagramApi, mode) {
 	const cookiesArg =
 		COOKIES_FILE && (await fileExists(COOKIES_FILE)) ? COOKIES_FILE : null;
 
-	const buildFn = isVideo ? buildArgs : buildImageArgs;
-	const args = [...buildFn(outTemplate, cookiesArg, instagramApi), url];
+	const isInstagram = url.includes("instagram.com");
+	const args = [
+		...(isVideo
+			? buildArgs(outTemplate, cookiesArg, instagramApi)
+			: buildImageArgs(outTemplate, cookiesArg, instagramApi, isInstagram)),
+		url,
+	];
 
 	let stdout;
 	try {
@@ -393,47 +414,44 @@ async function doDownloadMedia(url, instagramApi, mode) {
 }
 
 /**
- * Download a video from a URL.
- * Tries Instagram API fallbacks (web → ios → android) on auth errors.
+ * Run a download, retrying Instagram with the next app_id (web → ios) on auth/rate-limit errors.
  * @param {string} url
- * @returns {Promise<VideoResult>}
+ * @param {"video"|"images"} mode
+ * @returns {Promise<VideoResult|ImagesResult>}
  */
-export async function download(url) {
+async function downloadWithFallback(url, mode) {
 	const isInstagram = url.includes("instagram.com");
 	const apis = isInstagram ? INSTAGRAM_APIS : ["web"];
 	let lastErr;
 
 	for (const api of apis) {
 		try {
-			return /** @type {VideoResult} */ (await doDownloadMedia(url, api, "video"));
+			return await doDownloadMedia(url, api, mode);
 		} catch (err) {
 			lastErr = err;
-			if (!isInstagram || !isInstagramAuthError(err)) throw err;
+			if (!isInstagram || !isAuthError(err)) throw err;
+			console.warn(`Instagram app_id=${api} failed (${err.message}), trying next.`);
 		}
 	}
 	throw lastErr;
 }
 
 /**
- * Download images (slideshow/gallery) from a URL.
- * Tries Instagram API fallbacks (web → ios → android) on auth errors.
+ * Download a video from a URL.
+ * @param {string} url
+ * @returns {Promise<VideoResult>}
+ */
+export function download(url) {
+	return /** @type {Promise<VideoResult>} */ (downloadWithFallback(url, "video"));
+}
+
+/**
+ * Download images (TikTok slideshow / Instagram photo post or carousel) from a URL.
  * @param {string} url
  * @returns {Promise<ImagesResult>}
  */
-export async function downloadImages(url) {
-	const isInstagram = url.includes("instagram.com");
-	const apis = isInstagram ? INSTAGRAM_APIS : ["web"];
-	let lastErr;
-
-	for (const api of apis) {
-		try {
-			return /** @type {ImagesResult} */ (await doDownloadMedia(url, api, "images"));
-		} catch (err) {
-			lastErr = err;
-			if (!isInstagram || !isInstagramAuthError(err)) throw err;
-		}
-	}
-	throw lastErr;
+export function downloadImages(url) {
+	return /** @type {Promise<ImagesResult>} */ (downloadWithFallback(url, "images"));
 }
 
 /**
