@@ -1,3 +1,4 @@
-python-telegram-bot>=21.0
-yt-dlp>=2024.01.01
-python-dotenv>=1.0.0
+# Only needed when installing yt-dlp via pip instead of the standalone binary.
+# The curl-cffi extra is required: without browser impersonation, Instagram
+# redirects every anonymous post request to its login page.
+yt-dlp[default,curl-cffi]>=2025.1.1

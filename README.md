@@ -15,6 +15,12 @@ A Telegram bot that downloads high-quality, watermark-free videos from popular s
 ## Prerequisites
 
 - **Python 3.11+**
+- **yt-dlp with browser impersonation** — Instagram TLS-fingerprints requests, so yt-dlp must
+  be built with `curl_cffi` or every Instagram post is redirected to the login page
+  - Standalone binary: use `yt-dlp_linux` / `yt-dlp_linux_aarch64` / `yt-dlp.exe` — **not** the
+    plain `yt-dlp` zipimport asset, which is the one build that omits `curl_cffi`
+  - pip: `pip install "yt-dlp[default,curl-cffi]"`
+  - Verify: `yt-dlp --list-impersonate-targets` must list Chrome/Edge/Safari targets
 - **FFmpeg** — must be installed and in your system PATH
   - Windows: `choco install ffmpeg` or download from [ffmpeg.org](https://ffmpeg.org/download.html)
   - Linux: `sudo apt install ffmpeg`
@@ -59,8 +65,31 @@ A Telegram bot that downloads high-quality, watermark-free videos from popular s
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BOT_TOKEN` | — | Your Telegram Bot API token (required) |
+| `ADMIN_IDS` | — | Comma-separated Telegram user IDs allowed to run `/stats` |
+| `COOKIES_FILE` | — | Netscape-format cookies file; recommended for Instagram |
 | `MAX_FILE_SIZE_MB` | `50` | Max file size for uploads (Telegram limit) |
 | `DOWNLOAD_DIR` | `./downloads` | Temp directory for video files |
+| `COOLDOWN_SECONDS` | `5` | Delay enforced between two links from the same user |
+| `MAX_CONCURRENT_DOWNLOADS` | `3` | Max simultaneous yt-dlp processes |
+| `DOWNLOAD_TIMEOUT_MS` | scales with `MAX_FILE_SIZE_MB` | Hard timeout per download |
+
+## Troubleshooting
+
+### Instagram fails with a login redirect / "rate-limit"
+
+Instagram checks the TLS fingerprint of the request. When yt-dlp cannot impersonate a
+browser it gets redirected to the login page, and reports that as a rate-limit — so the
+message is misleading and waiting does not help.
+
+1. Run `yt-dlp --list-impersonate-targets`. An empty list is the problem: reinstall yt-dlp
+   with `curl_cffi` (see Prerequisites). The bot also logs a warning at startup in this case.
+2. If it still fails, the post genuinely requires an account. Export cookies from a
+   logged-in browser in Netscape format and point `COOKIES_FILE` at the file. Under Docker
+   the file has to be mounted into the container:
+   ```bash
+   docker run -v /path/to/cookies.txt:/app/cookies.txt \
+              -e COOKIES_FILE=/app/cookies.txt  ...
+   ```
 
 ## Architecture
 

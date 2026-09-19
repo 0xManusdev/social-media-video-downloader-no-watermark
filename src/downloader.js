@@ -50,18 +50,31 @@ const RUNNER_CANDIDATES = [
 let _runner = null;
 
 /**
+ * yt-dlp needs curl_cffi to impersonate a browser's TLS fingerprint. Without it Instagram
+ * redirects every anonymous post to its login page, which yt-dlp reports as a rate-limit.
+ * null until the probe has run.
+ * @type {boolean|null}
+ */
+let _canImpersonate = null;
+
+const IMPERSONATION_HINT =
+	"yt-dlp has no browser impersonation (curl_cffi missing) — Instagram downloads will fail. " +
+	'Use a build that bundles it (yt-dlp_linux) or run: pip install "yt-dlp[default,curl-cffi]"';
+
+/**
+ * @typedef {{ outTemplate: string, cookiesFile: string|null, instagramApi: string, isInstagram: boolean }} BuildOpts
+ */
+
+/**
  * CLI flags shared between video and image download modes.
- * @param {string} outTemplate
- * @param {string|null} cookiesFile
- * @param {string} instagramApi
+ * @param {BuildOpts} opts
  * @returns {string[]}
  */
-function buildBaseArgs(outTemplate, cookiesFile, instagramApi) {
+function buildBaseArgs({ outTemplate, cookiesFile, instagramApi, isInstagram }) {
 	const args = [
 		"--socket-timeout", "15",
 		"--retries", "3",
 		"--geo-bypass",
-		"--user-agent", USER_AGENT,
 		// One --extractor-args per extractor: yt-dlp does not accept several IE keys in a single value
 		"--extractor-args", "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com",
 		"--extractor-args", `instagram:app_id=${instagramApi}`,
@@ -71,20 +84,20 @@ function buildBaseArgs(outTemplate, cookiesFile, instagramApi) {
 		"--no-simulate",
 	];
 
-	if (cookiesFile) {
-		args.push("--cookies", cookiesFile);
-	}
+	// Forcing a UA while yt-dlp impersonates a browser makes the header contradict the
+	// TLS fingerprint — the exact mismatch Instagram rejects. Let yt-dlp pick its own.
+	if (!isInstagram) args.push("--user-agent", USER_AGENT);
+
+	if (cookiesFile) args.push("--cookies", cookiesFile);
 
 	return args;
 }
 
 /**
- * @param {string} outTemplate
- * @param {string|null} cookiesFile
- * @param {string} [instagramApi="web"]
+ * @param {BuildOpts} opts
  * @returns {string[]}
  */
-function buildArgs(outTemplate, cookiesFile, instagramApi = "web") {
+function buildArgs(opts) {
 	return [
 		"--format",
 		[
@@ -101,27 +114,21 @@ function buildArgs(outTemplate, cookiesFile, instagramApi = "web") {
 		"--buffer-size", "16K",
 		"--http-chunk-size", "10M",
 		"--max-filesize", `${MAX_FILE_SIZE_MB}M`,
-		...buildBaseArgs(outTemplate, cookiesFile, instagramApi),
+		...buildBaseArgs(opts),
 	];
 }
 
 /**
- * @param {string} outTemplate
- * @param {string|null} cookiesFile
- * @param {string} instagramApi
- * @param {boolean} isInstagram
+ * @param {BuildOpts} opts
  * @returns {string[]}
  */
-function buildImageArgs(outTemplate, cookiesFile, instagramApi, isInstagram) {
+function buildImageArgs(opts) {
 	// Instagram exposes photos only as thumbnails (no "images" format), and raises
 	// "There is no video in this post" unless no-formats errors are ignored.
-	const modeArgs = isInstagram
+	const modeArgs = opts.isInstagram
 		? ["--ignore-no-formats-error", "--skip-download", "--write-thumbnail"]
 		: ["--format", "images"];
-	return [
-		...modeArgs,
-		...buildBaseArgs(outTemplate, cookiesFile, instagramApi),
-	];
+	return [...modeArgs, ...buildBaseArgs(opts)];
 }
 
 /**
@@ -209,8 +216,13 @@ function extractError(raw) {
 	if (/empty media response/i.test(line))
 		return "Instagram returned no data. This post may require login. Ask the admin to configure cookies.";
 
-	if (/rate-limit|not granting access/i.test(line))
-		return "Instagram is rate-limiting anonymous access. Retry later or ask the admin to configure cookies.";
+	if (/rate-limit|redirected to the login page/i.test(line))
+		return _canImpersonate === false
+			? "Instagram needs a yt-dlp build with browser impersonation. Ask the admin to update yt-dlp."
+			: "Instagram refused anonymous access to this post. Retry later or ask the admin to configure cookies.";
+
+	if (/not granting access/i.test(line))
+		return "Instagram is not granting access to this post. Retry later or ask the admin to configure cookies.";
 
 	if (/cookies are no longer valid/i.test(line))
 		return "The configured Instagram cookies have expired. Ask the admin to refresh them.";
@@ -316,11 +328,17 @@ async function getRunner() {
 		throw new DownloadError(`yt-dlp found but failed to run: ${lastErr.message}`);
 	}
 	throw new DownloadError(
-		"yt-dlp not found. Run: pip install yt-dlp  OR  add the yt-dlp binary to PATH."
+		'yt-dlp not found. Run: pip install "yt-dlp[default,curl-cffi]"  OR  add the yt-dlp binary to PATH.'
 	);
 }
 
-getRunner().catch(() => {});
+getRunner()
+	.then(async (runner) => {
+		const targets = await spawnRunner(runner, ["--list-impersonate-targets"]);
+		_canImpersonate = /chrome|edge|safari/i.test(targets);
+		if (!_canImpersonate) console.warn(IMPERSONATION_HINT);
+	})
+	.catch(() => {});
 
 /** @typedef {{ type: "video", filePath: string, title: string, duration: number, uploader: string, platform: string, fileSize: number }} VideoResult */
 /** @typedef {{ type: "images", imagePaths: string[], title: string, uploader: string, platform: string, count: number }} ImagesResult */
@@ -345,13 +363,13 @@ async function doDownloadMedia(url, instagramApi, mode) {
 	const cookiesArg =
 		COOKIES_FILE && (await fileExists(COOKIES_FILE)) ? COOKIES_FILE : null;
 
-	const isInstagram = url.includes("instagram.com");
-	const args = [
-		...(isVideo
-			? buildArgs(outTemplate, cookiesArg, instagramApi)
-			: buildImageArgs(outTemplate, cookiesArg, instagramApi, isInstagram)),
-		url,
-	];
+	const opts = {
+		outTemplate,
+		cookiesFile: cookiesArg,
+		instagramApi,
+		isInstagram: url.includes("instagram.com"),
+	};
+	const args = [...(isVideo ? buildArgs(opts) : buildImageArgs(opts)), url];
 
 	let stdout;
 	try {

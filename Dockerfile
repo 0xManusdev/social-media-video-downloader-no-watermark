@@ -20,9 +20,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+# Must be a build that bundles curl_cffi. The plain "yt-dlp" zipimport asset does not,
+# and without browser impersonation Instagram redirects every anonymous post to its login page.
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) asset=yt-dlp_linux ;; \
+        arm64) asset=yt-dlp_linux_aarch64 ;; \
+        *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${asset}" \
         -o /usr/local/bin/yt-dlp \
-    && chmod +x /usr/local/bin/yt-dlp
+    && chmod +x /usr/local/bin/yt-dlp \
+    && yt-dlp --version
 
 WORKDIR /app
 
