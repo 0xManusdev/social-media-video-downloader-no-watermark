@@ -3,6 +3,12 @@ node_modules
 .env.*
 downloads/
 *.log
+logs/
 .git
 .gitignore
-README.md
+.dockerignore
+*.md
+test/
+ecosystem.config.cjs
+requirements.txt
+cache.sqlite

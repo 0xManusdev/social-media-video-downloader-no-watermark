@@ -5,7 +5,6 @@ module.exports = {
 			script: "src/index.js",
 			cwd: "./",
 			interpreter: "node",
-			node_args: "--experimental-vm-modules",
 			env: {
 				NODE_ENV: "production",
 			},
