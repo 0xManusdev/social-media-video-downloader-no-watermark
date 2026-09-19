@@ -105,6 +105,11 @@ capped a few MB below `MAX_FILE_SIZE_MB`, so an oversized source steps down in r
 instead of failing — a long 1080p YouTube video is delivered at 720p rather than rejected.
 Raising `MAX_FILE_SIZE_MB` above 50 requires a self-hosted Telegram Bot API server.
 
+Every video also goes through a final stream-copy pass that rewrites the container. DASH
+sources (Instagram in particular) are delivered as fragmented MP4 with no keyframe index,
+which desktop players tolerate but mobile decoders do not — the picture freezes while the
+sound keeps playing. The rewrite restores the index and moves `moov` to the front.
+
 ## Architecture
 
 ```

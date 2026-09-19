@@ -117,10 +117,13 @@ function buildArgs(opts) {
 			"best",
 		].join("/"),
 		"--merge-output-format", "mp4",
-		// The merger already stream-copies; scope the args to it so faststart is the only
-		// addition. A blanket "ffmpeg:" prefix would force -c copy on every other
-		// postprocessor too, which is what produced unplayable containers.
-		"--postprocessor-args", "Merger:-movflags +faststart",
+		// DASH sources arrive as fragmented MP4: moof/mvex boxes and no stss keyframe index.
+		// Desktop players parse the fragments, mobile decoders rely on the moov index and show
+		// a frozen picture while the audio plays. Merging rewrites the container, but a single
+		// video-only format is never merged, and --remux-video/--fixup both skip a file that is
+		// already mp4. Embedding metadata forces the stream-copy rewrite that normalizes it.
+		"--embed-metadata",
+		"--postprocessor-args", "Metadata:-movflags +faststart",
 		"--no-playlist",
 		"--concurrent-fragments", "16",
 		"--fragment-retries", "5",
