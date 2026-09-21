@@ -1,4 +1,4 @@
-import { readdir, unlink, access } from "fs/promises";
+import { readdir, unlink, access, statfs } from "fs/promises";
 import { constants as fsConstants } from "fs";
 import { join } from "path";
 
@@ -55,6 +55,16 @@ export async function findDownloadedImages(dir, prefix) {
 			return a.localeCompare(b, undefined, { numeric: true });
 		})
 		.map((f) => join(dir, f));
+}
+
+/**
+ * Free space on the filesystem holding `dir`, in bytes.
+ * @param {string} dir
+ * @returns {Promise<number>}
+ */
+export async function freeSpaceBytes(dir) {
+	const { bavail, bsize } = await statfs(dir);
+	return bavail * bsize;
 }
 
 /**

@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import { MAX_FILE_SIZE_BYTES } from "../config.js";
 import { DownloadError } from "./errors.js";
+import { PROGRESS_PREFIX } from "./args.js";
 
 // Timeout scales with the size cap (assume a slow link) instead of being a fixed constant.
 const MIN_THROUGHPUT_BYTES_PER_SEC = 300 * 1024;
@@ -89,9 +90,10 @@ export function extractError(raw) {
 /**
  * @param {{ cmd: string, pre: string[] }} candidate
  * @param {string[]} args
+ * @param {{ onProgress?: (percent: string) => void }} [opts]
  * @returns {Promise<string>} stdout
  */
-function spawnProcess({ cmd, pre }, args) {
+function spawnProcess({ cmd, pre }, args, { onProgress } = {}) {
 	return new Promise((resolve, reject) => {
 		const child = spawn(cmd, [...pre, ...args], {
 			stdio: ["ignore", "pipe", "pipe"],
@@ -100,6 +102,7 @@ function spawnProcess({ cmd, pre }, args) {
 
 		let stdout = "";
 		let stderr = "";
+		let lineBuf = "";
 		let timedOut = false;
 		let settled = false;
 
@@ -117,7 +120,17 @@ function spawnProcess({ cmd, pre }, args) {
 		}, TIMEOUT_MS);
 
 		child.stdout.setEncoding("utf8");
-		child.stdout.on("data", (c) => { stdout += c; });
+		child.stdout.on("data", (c) => {
+			stdout += c;
+			if (!onProgress) return;
+			// --newline guarantees one update per line; buffer the trailing partial line.
+			lineBuf += c;
+			const lines = lineBuf.split("\n");
+			lineBuf = lines.pop();
+			for (const line of lines) {
+				if (line.startsWith(PROGRESS_PREFIX)) onProgress(line.slice(PROGRESS_PREFIX.length).trim());
+			}
+		});
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (c) => { stderr += c; });
 
@@ -179,10 +192,11 @@ async function getRunner() {
 /**
  * Run yt-dlp with the given arguments and return its stdout.
  * @param {string[]} args
+ * @param {{ onProgress?: (percent: string) => void }} [opts]
  * @returns {Promise<string>}
  */
-export async function runYtDlp(args) {
-	return spawnProcess(await getRunner(), args);
+export async function runYtDlp(args, opts) {
+	return spawnProcess(await getRunner(), args, opts);
 }
 
 /**

@@ -39,9 +39,31 @@ try {
 	}
 }
 
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 25_000;
+
+/** Poll until no downloads are active, or the timeout elapses. */
+function waitForActiveDownloads(timeoutMs) {
+	return new Promise((resolve) => {
+		const deadline = Date.now() + timeoutMs;
+		const check = () => {
+			if (queue.activeDownloads() === 0 || Date.now() >= deadline) return resolve();
+			setTimeout(check, 500);
+		};
+		check();
+	});
+}
+
 async function shutdown(signal) {
 	console.log(`Received ${signal}, shutting down...`);
+	// Stop accepting new updates first so activeDownloads() can only drain, not grow.
 	try { await bot.stop(signal); } catch {}
+
+	const active = queue.activeDownloads();
+	if (active > 0) {
+		console.log(`Waiting up to ${SHUTDOWN_DRAIN_TIMEOUT_MS / 1000}s for ${active} active download(s) to finish...`);
+		await waitForActiveDownloads(SHUTDOWN_DRAIN_TIMEOUT_MS);
+		if (queue.activeDownloads() > 0) console.warn(`Exiting with ${queue.activeDownloads()} download(s) still in flight.`);
+	}
 	process.exit(0);
 }
 

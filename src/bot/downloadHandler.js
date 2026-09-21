@@ -8,6 +8,38 @@ import { editStatus, sendVideo, sendImages } from "./telegram.js";
 // Platforms whose links may point at a photo post rather than a video.
 const IMAGE_FALLBACK_PLATFORMS = new Set(["TikTok", "Instagram"]);
 
+// Telegram throttles editMessageText per chat; only push an update when the number
+// changed meaningfully or enough time passed, so we stay well under that limit.
+const PROGRESS_MIN_INTERVAL_MS = 3000;
+const PROGRESS_MIN_DELTA = 5;
+
+/**
+ * @param {import("telegraf").Context} ctx
+ * @param {number} msgId
+ * @param {string} platform
+ * @returns {(percent: string) => void}
+ */
+function makeProgressReporter(ctx, msgId, platform) {
+	let lastEdit = 0;
+	let lastPct = -Infinity;
+	return (percentStr) => {
+		const pct = parseFloat(percentStr);
+		if (!Number.isFinite(pct)) return;
+
+		const now = Date.now();
+		const isDone = pct >= 100;
+		if (!isDone && now - lastEdit < PROGRESS_MIN_INTERVAL_MS && pct - lastPct < PROGRESS_MIN_DELTA) return;
+
+		lastEdit = now;
+		lastPct = pct;
+		editStatus(
+			ctx,
+			msgId,
+			`Downloading from <b>${platform}</b>...\n<i>${pct.toFixed(0)}%</i>`
+		).catch(() => {});
+	};
+}
+
 /**
  * @param {unknown} err
  * @returns {string} HTML for the status message
@@ -62,6 +94,7 @@ export async function handleTextMessage(ctx) {
 		result = await fetchMedia(url, {
 			imageFallback: IMAGE_FALLBACK_PLATFORMS.has(platform),
 			onImageFallback: () => editStatus(ctx, statusMsg.message_id, "Downloading images..."),
+			onProgress: makeProgressReporter(ctx, statusMsg.message_id, platform),
 		});
 
 		const uploading = result.type === "images" ? "Uploading images..." : "Uploading...";

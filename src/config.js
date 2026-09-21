@@ -48,5 +48,5 @@ export const PLATFORMS = {
 	YouTube:       ["youtube.com", "youtu.be", "m.youtube.com"],
 	Reddit:        ["reddit.com", "redd.it", "v.redd.it"],
 	Snapchat:      ["snapchat.com", "t.snapchat.com"],
-	Threads:       ["threads.net"],
+	Threads:       ["threads.net", "threads.com"],
 };

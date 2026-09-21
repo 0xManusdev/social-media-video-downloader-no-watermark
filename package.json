@@ -7,7 +7,7 @@
 	"scripts": {
 		"start": "node src/index.js",
 		"dev": "node --watch src/index.js",
-		"test": "node --test"
+		"test": "node --experimental-test-module-mocks --test"
 	},
 	"dependencies": {
 		"dotenv": "^16.4.5",

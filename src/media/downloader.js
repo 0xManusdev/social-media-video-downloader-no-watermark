@@ -5,11 +5,24 @@ import { randomBytes } from "crypto";
 import { DOWNLOAD_DIR, MAX_FILE_SIZE_BYTES, MAX_FILE_SIZE_MB, COOKIES_FILE } from "../config.js";
 import { runYtDlp, isAuthError } from "./ytdlp.js";
 import { buildVideoArgs, buildImageArgs } from "./args.js";
-import { findDownloadedFile, findDownloadedImages, fileExists, cleanup, cleanupImages } from "./files.js";
+import { findDownloadedFile, findDownloadedImages, fileExists, freeSpaceBytes, cleanup, cleanupImages } from "./files.js";
 import { ensurePlayable } from "./mp4.js";
 import { DownloadError, FileTooLargeError } from "./errors.js";
 
 export { DownloadError, FileTooLargeError };
+
+// ensurePlayable can write a full temp copy (.fix.mp4) alongside the original before
+// replacing it, so a single download can transiently hold ~2x its own size on disk.
+const MIN_FREE_BYTES = MAX_FILE_SIZE_BYTES * 2;
+
+async function ensureDiskSpace() {
+	const free = await freeSpaceBytes(DOWNLOAD_DIR);
+	if (free < MIN_FREE_BYTES) {
+		throw new DownloadError(
+			`Not enough disk space on the server to download right now (need ~${Math.ceil(MIN_FREE_BYTES / 1024 / 1024)} MB free). Try again later.`
+		);
+	}
+}
 
 /** @typedef {{ type: "video", filePath: string, title: string, duration: number, width: number, height: number, uploader: string, platform: string, fileSize: number }} VideoResult */
 /** @typedef {{ type: "images", imagePaths: string[], title: string, uploader: string, platform: string, count: number }} ImagesResult */
@@ -114,9 +127,12 @@ async function finishImages(fileId, info) {
  * @param {string} url
  * @param {string} instagramApi
  * @param {"video"|"images"} mode
+ * @param {(percent: string) => void} [onProgress]
  * @returns {Promise<MediaResult>}
  */
-async function attempt(url, instagramApi, mode) {
+async function attempt(url, instagramApi, mode, onProgress) {
+	await ensureDiskSpace();
+
 	const isVideo = mode === "video";
 	const fileId = randomBytes(6).toString("hex");
 
@@ -130,7 +146,7 @@ async function attempt(url, instagramApi, mode) {
 
 	let stdout;
 	try {
-		stdout = await runYtDlp(args);
+		stdout = await runYtDlp(args, { onProgress });
 	} catch (err) {
 		await discardPartial(fileId, isVideo);
 		throw err;
@@ -144,15 +160,16 @@ async function attempt(url, instagramApi, mode) {
  * Retry Instagram with the next app_id (web → ios) on auth / rate-limit errors.
  * @param {string} url
  * @param {"video"|"images"} mode
+ * @param {(percent: string) => void} [onProgress]
  * @returns {Promise<MediaResult>}
  */
-async function withInstagramFallback(url, mode) {
+async function withInstagramFallback(url, mode, onProgress) {
 	const apis = isInstagramUrl(url) ? INSTAGRAM_APIS : ["web"];
 	let lastErr;
 
 	for (const api of apis) {
 		try {
-			return await attempt(url, api, mode);
+			return await attempt(url, api, mode, onProgress);
 		} catch (err) {
 			lastErr = err;
 			if (apis.length === 1 || !isAuthError(err)) throw err;
@@ -164,19 +181,21 @@ async function withInstagramFallback(url, mode) {
 
 /**
  * @param {string} url
+ * @param {(percent: string) => void} [onProgress]
  * @returns {Promise<VideoResult>}
  */
-export function download(url) {
-	return /** @type {Promise<VideoResult>} */ (withInstagramFallback(url, "video"));
+export function download(url, onProgress) {
+	return /** @type {Promise<VideoResult>} */ (withInstagramFallback(url, "video", onProgress));
 }
 
 /**
  * TikTok slideshow, Instagram photo post or carousel.
  * @param {string} url
+ * @param {(percent: string) => void} [onProgress]
  * @returns {Promise<ImagesResult>}
  */
-export function downloadImages(url) {
-	return /** @type {Promise<ImagesResult>} */ (withInstagramFallback(url, "images"));
+export function downloadImages(url, onProgress) {
+	return /** @type {Promise<ImagesResult>} */ (withInstagramFallback(url, "images", onProgress));
 }
 
 /**
@@ -185,16 +204,16 @@ export function downloadImages(url) {
  * rate-limit failures would fail identically in image mode, so they surface directly.
  *
  * @param {string} url
- * @param {{ imageFallback?: boolean, onImageFallback?: () => Promise<void> | void }} [opts]
+ * @param {{ imageFallback?: boolean, onImageFallback?: () => Promise<void> | void, onProgress?: (percent: string) => void }} [opts]
  * @returns {Promise<MediaResult>}
  */
-export async function fetchMedia(url, { imageFallback = false, onImageFallback } = {}) {
+export async function fetchMedia(url, { imageFallback = false, onImageFallback, onProgress } = {}) {
 	try {
-		return await download(url);
+		return await download(url, onProgress);
 	} catch (err) {
 		if (!imageFallback || !(err instanceof DownloadError) || isAuthError(err)) throw err;
 		await onImageFallback?.();
-		return downloadImages(url);
+		return downloadImages(url, onProgress);
 	}
 }
 

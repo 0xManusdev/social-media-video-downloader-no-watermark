@@ -9,6 +9,11 @@ const USER_AGENT =
 
 const TIKTOK_EXTRACTOR_ARGS = "tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com";
 
+// One line per update (instead of \r-overwrites) so the parent process can read progress
+// off stdout, tagged so it can't be confused with the final --print-json document.
+export const PROGRESS_PREFIX = "PROGRESS ";
+const PROGRESS_ARGS = ["--newline", "--progress-template", `download:${PROGRESS_PREFIX}%(progress._percent_str)s`];
+
 // Telegram's player is only dependable with H.264 video + AAC audio in MP4: AV1 and VP9
 // play as a black screen on many clients, and Opus in MP4 plays silently. Ask for
 // avc1+mp4a first, capped by size so an oversized source degrades in resolution instead
@@ -47,6 +52,7 @@ function baseArgs({ outTemplate, cookiesFile, instagramApi, isInstagram }) {
 		"--output", outTemplate,
 		"--print-json",
 		"--no-simulate",
+		...PROGRESS_ARGS,
 	];
 
 	// Forcing a UA while yt-dlp impersonates a browser makes the header contradict the
