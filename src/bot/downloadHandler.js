@@ -1,12 +1,18 @@
+import { Markup } from "telegraf";
+
 import { extractUrls, identifyPlatform, escapeHtml } from "../utils.js";
 import { fetchMedia, cleanupResult, DownloadError, FileTooLargeError } from "../media/downloader.js";
 import { stats } from "../stats.js";
 import { queue } from "../queue.js";
 import { checkCooldown } from "./cooldown.js";
+import { saveForRetry, popForRetry } from "./retryStore.js";
 import { editStatus, sendVideo, sendImages } from "./telegram.js";
 
 // Platforms whose links may point at a photo post rather than a video.
 const IMAGE_FALLBACK_PLATFORMS = new Set(["TikTok", "Instagram"]);
+
+const RETRY_PREFIX = "retry:";
+export const RETRY_ACTION_PATTERN = new RegExp(`^${RETRY_PREFIX}`);
 
 // Telegram throttles editMessageText per chat; only push an update when the number
 // changed meaningfully or enough time passed, so we stay well under that limit.
@@ -58,6 +64,62 @@ function describeError(err) {
 }
 
 /**
+ * Run one download end to end: acquire a queue slot, report progress on a status message
+ * (creating one if none is given, e.g. on the first attempt — or reusing one, e.g. on a
+ * retry), then send the result. On failure, the status message gets a Retry button.
+ *
+ * @param {import("telegraf").Context} ctx
+ * @param {{ url: string, platform: string, messageId?: number, replyToMessageId?: number }} opts
+ */
+async function runDownload(ctx, { url, platform, messageId, replyToMessageId }) {
+	await queue.acquire(ctx.from.id);
+
+	let msgId = messageId;
+	let result = null;
+
+	try {
+		const startText = `Downloading from <b>${platform}</b>...\n<i>Please wait.</i>`;
+		if (msgId) {
+			await editStatus(ctx, msgId, startText, { parse_mode: "HTML" });
+		} else {
+			const sent = await ctx.replyWithHTML(startText, {
+				...(replyToMessageId ? { reply_to_message_id: replyToMessageId } : {}),
+			});
+			msgId = sent.message_id;
+		}
+
+		stats.recordAttempt();
+
+		result = await fetchMedia(url, {
+			imageFallback: IMAGE_FALLBACK_PLATFORMS.has(platform),
+			onImageFallback: () => editStatus(ctx, msgId, "Downloading images..."),
+			onProgress: makeProgressReporter(ctx, msgId, platform),
+		});
+
+		const uploading = result.type === "images" ? "Uploading images..." : "Uploading...";
+		editStatus(ctx, msgId, uploading).catch(() => {});
+
+		if (result.type === "images") await sendImages(ctx, result, platform, replyToMessageId);
+		else await sendVideo(ctx, result, platform, replyToMessageId);
+
+		stats.recordSuccess(platform, ctx.from.id);
+		ctx.telegram.deleteMessage(ctx.chat.id, msgId).catch(() => {});
+	} catch (err) {
+		const errText = describeError(err);
+		if (msgId) {
+			const retryId = saveForRetry(url, ctx.from.id);
+			await editStatus(ctx, msgId, errText, {
+				parse_mode: "HTML",
+				...Markup.inlineKeyboard([Markup.button.callback("🔄 Réessayer", `${RETRY_PREFIX}${retryId}`)]),
+			});
+		}
+	} finally {
+		queue.release(ctx.from.id);
+		if (result) cleanupResult(result).catch(() => {});
+	}
+}
+
+/**
  * Text-message handler: find a supported link, download it, send it back.
  * @param {import("telegraf").Context} ctx
  */
@@ -76,40 +138,34 @@ export async function handleTextMessage(ctx) {
 	const wait = checkCooldown(ctx.from.id);
 	if (wait > 0) return ctx.reply(`Please wait ${wait}s before sending another link.`);
 
-	const platform = identifyPlatform(url);
+	await runDownload(ctx, {
+		url,
+		platform: identifyPlatform(url),
+		replyToMessageId: ctx.message.message_id,
+	});
+}
 
-	await queue.acquire(ctx.from.id);
+/**
+ * "🔄 Réessayer" button handler: re-run a failed download from its saved URL, reusing the
+ * same status message.
+ * @param {import("telegraf").Context} ctx
+ */
+export async function handleRetryAction(ctx) {
+	const id = ctx.callbackQuery.data.slice(RETRY_PREFIX.length);
+	const url = popForRetry(id, ctx.from.id);
+	if (!url) return ctx.answerCbQuery("This retry link expired — send the link again.", { show_alert: true });
 
-	let statusMsg;
-	let result = null;
+	await ctx.answerCbQuery();
 
-	try {
-		statusMsg = await ctx.replyWithHTML(
-			`Downloading from <b>${platform}</b>...\n<i>Please wait.</i>`,
-			{ reply_to_message_id: ctx.message.message_id }
-		);
+	const messageId = ctx.callbackQuery.message.message_id;
 
-		stats.recordAttempt();
+	const wait = checkCooldown(ctx.from.id);
+	if (wait > 0) return editStatus(ctx, messageId, `Please wait ${wait}s before sending another link.`);
 
-		result = await fetchMedia(url, {
-			imageFallback: IMAGE_FALLBACK_PLATFORMS.has(platform),
-			onImageFallback: () => editStatus(ctx, statusMsg.message_id, "Downloading images..."),
-			onProgress: makeProgressReporter(ctx, statusMsg.message_id, platform),
-		});
-
-		const uploading = result.type === "images" ? "Uploading images..." : "Uploading...";
-		editStatus(ctx, statusMsg.message_id, uploading).catch(() => {});
-
-		if (result.type === "images") await sendImages(ctx, result, platform);
-		else await sendVideo(ctx, result, platform);
-
-		stats.recordSuccess(platform, ctx.from.id);
-		ctx.telegram.deleteMessage(ctx.chat.id, statusMsg.message_id).catch(() => {});
-	} catch (err) {
-		const errText = describeError(err);
-		if (statusMsg) await editStatus(ctx, statusMsg.message_id, errText, { parse_mode: "HTML" });
-	} finally {
-		queue.release(ctx.from.id);
-		if (result) cleanupResult(result).catch(() => {});
-	}
+	await runDownload(ctx, {
+		url,
+		platform: identifyPlatform(url),
+		messageId,
+		replyToMessageId: ctx.callbackQuery.message.reply_to_message?.message_id,
+	});
 }

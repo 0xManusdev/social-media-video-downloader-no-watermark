@@ -24,8 +24,9 @@ export async function editStatus(ctx, msgId, text, extra = {}) {
  * @param {import("telegraf").Context} ctx
  * @param {import("../media/downloader.js").VideoResult} result
  * @param {string} platform
+ * @param {number} [replyToMessageId]
  */
-export async function sendVideo(ctx, result, platform) {
+export async function sendVideo(ctx, result, platform, replyToMessageId) {
 	const { filePath, title, duration, width, height, uploader, fileSize } = result;
 
 	const mins = Math.floor(duration / 60);
@@ -45,7 +46,7 @@ export async function sendVideo(ctx, result, platform) {
 			supports_streaming: true,
 			...(duration ? { duration: Math.round(duration) } : {}),
 			...(width && height ? { width, height } : {}),
-			reply_to_message_id: ctx.message.message_id,
+			...(replyToMessageId ? { reply_to_message_id: replyToMessageId } : {}),
 		}
 	);
 }
@@ -54,8 +55,9 @@ export async function sendVideo(ctx, result, platform) {
  * @param {import("telegraf").Context} ctx
  * @param {import("../media/downloader.js").ImagesResult} result
  * @param {string} platform
+ * @param {number} [replyToMessageId]
  */
-export async function sendImages(ctx, result, platform) {
+export async function sendImages(ctx, result, platform, replyToMessageId) {
 	const { imagePaths, title, uploader, count } = result;
 	const caption =
 		`<b>${escapeHtml(title)}</b>\n` +
@@ -68,6 +70,8 @@ export async function sendImages(ctx, result, platform) {
 			media: { source: createReadStream(p) },
 			...(i === 0 && idx === 0 ? { caption, parse_mode: "HTML" } : {}),
 		}));
-		await ctx.replyWithMediaGroup(mediaGroup, { reply_to_message_id: ctx.message.message_id });
+		await ctx.replyWithMediaGroup(mediaGroup, {
+			...(replyToMessageId ? { reply_to_message_id: replyToMessageId } : {}),
+		});
 	}
 }

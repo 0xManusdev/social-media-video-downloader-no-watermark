@@ -3,8 +3,9 @@ import { message } from "telegraf/filters";
 
 import { BOT_TOKEN } from "./config.js";
 import { registerCommands, BOT_COMMANDS } from "./bot/commands.js";
-import { handleTextMessage } from "./bot/downloadHandler.js";
+import { handleTextMessage, handleRetryAction, RETRY_ACTION_PATTERN } from "./bot/downloadHandler.js";
 import { sweepCooldowns } from "./bot/cooldown.js";
+import { sweepRetryStore } from "./bot/retryStore.js";
 import { warmUp } from "./media/ytdlp.js";
 import { COOLDOWN_SECONDS } from "./config.js";
 import { queue } from "./queue.js";
@@ -17,6 +18,7 @@ const bot = new Telegraf(BOT_TOKEN, {
 
 registerCommands(bot);
 bot.on(message("text"), handleTextMessage);
+bot.action(RETRY_ACTION_PATTERN, handleRetryAction);
 
 bot.catch((err) => {
 	console.error("Unhandled bot error:", err.message);
@@ -71,6 +73,7 @@ bot.launch({ dropPendingUpdates: true });
 console.log("Bot is running...");
 
 setInterval(sweepCooldowns, Math.max(COOLDOWN_SECONDS * 60_000, 60_000)).unref();
+setInterval(sweepRetryStore, 600_000).unref();
 setInterval(() => queue.cleanupIdleUsers(), 600_000).unref();
 setInterval(() => stats.cleanup(), 3_600_000).unref();
 
